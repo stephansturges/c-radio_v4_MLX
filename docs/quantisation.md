@@ -83,6 +83,25 @@ cradio-mlx quantize \
   --mode cider-w8a8
 ```
 
+Build the balanced g128 and fastest p99.99 variants:
+
+```sh
+cradio-mlx quantize \
+  --model bundles/c-radiov4-so400m-bf16 \
+  --out bundles/c-radiov4-so400m-cider-w8a8-g128 \
+  --bits 8 \
+  --group-size 128 \
+  --mode cider-w8a8
+
+cradio-mlx quantize \
+  --model bundles/c-radiov4-so400m-bf16 \
+  --out bundles/c-radiov4-so400m-cider-w8a8-p9999 \
+  --bits 8 \
+  --group-size 0 \
+  --mode cider-w8a8 \
+  --clip-percentile 99.99
+```
+
 Current 512px precision versus bf16 on 12 WALDO crops:
 
 | Model | Format | Summary cosine mean/min | Spatial cosine mean/min |
@@ -99,16 +118,25 @@ Smoke-image Cider W8A8 precision versus bf16 at `512x512`:
 | C-RADIOv4-SO400M | 0.998164 | 0.998889 |
 | C-RADIOv4-H | 0.997202 | 0.996210 |
 
+WALDO 12-image Cider W8A8 precision versus bf16 at `512x512`:
+
+| Model | Variant | Summary cosine mean/min | Spatial cosine mean/min |
+| --- | --- | ---: | ---: |
+| C-RADIOv4-SO400M | g128 | 0.998808 / 0.998460 | 0.999269 / 0.998657 |
+| C-RADIOv4-SO400M | p99.99 | 0.998638 / 0.998112 | 0.999240 / 0.998586 |
+| C-RADIOv4-H | g128 | 0.997935 / 0.997436 | 0.997821 / 0.996704 |
+| C-RADIOv4-H | p99.99 | 0.997642 / 0.996978 | 0.997628 / 0.996634 |
+
 Cider W4A8 was tested but is not supported. It reduced SO400M/H bundles to 271 MB /
 384 MB, but failed smoke precision at `256x256` with SO400M summary/spatial cosine
 `0.913606` / `0.979707` and H `0.850901` / `0.817213`.
 
 Current bundle sizes:
 
-| Model | bf16 | 8-bit affine | Cider W8A8 | mxfp8 |
-| --- | ---: | ---: | ---: | ---: |
-| C-RADIOv4-SO400M | 1.6 GB | 517 MB | 468 MB | 479 MB |
-| C-RADIOv4-H | 2.4 GB | 758 MB | 685 MB | 702 MB |
+| Model | bf16 | 8-bit affine | Cider W8A8 | Cider W8A8 g128 | mxfp8 |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| C-RADIOv4-SO400M | 1.6 GB | 517 MB | 468 MB | 480 MB | 479 MB |
+| C-RADIOv4-H | 2.4 GB | 758 MB | 685 MB | 702 MB | 702 MB |
 
 Current packed-runtime `512x512`, batch-1 speed:
 
@@ -117,9 +145,13 @@ Current packed-runtime `512x512`, batch-1 speed:
 | C-RADIOv4-SO400M | bf16 | 32.7 ms | 30.6 images/s |
 | C-RADIOv4-SO400M | 8-bit affine packed | 49.6 ms | 20.2 images/s |
 | C-RADIOv4-SO400M | Cider W8A8 packed | 32.5 ms | 30.8 images/s |
+| C-RADIOv4-SO400M | Cider W8A8 g128 packed | 31.3 ms | 32.0 images/s |
+| C-RADIOv4-SO400M | Cider W8A8 p99.99 packed | 29.8 ms | 33.5 images/s |
 | C-RADIOv4-H | bf16 | 53.7 ms | 18.6 images/s |
 | C-RADIOv4-H | 8-bit affine packed | 74.2 ms | 13.5 images/s |
 | C-RADIOv4-H | Cider W8A8 packed | 47.1 ms | 21.2 images/s |
+| C-RADIOv4-H | Cider W8A8 g128 packed | 48.3 ms | 20.7 images/s |
+| C-RADIOv4-H | Cider W8A8 p99.99 packed | 43.7 ms | 22.9 images/s |
 
 `mxfp4` and `nvfp4` smoke checks did not pass precision gates. Keep bf16 as the
 performance tier, 8-bit affine as the compact high-precision/low-runtime-weight-memory

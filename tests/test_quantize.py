@@ -18,12 +18,19 @@ def test_validate_affine_bits():
 
 def test_validate_cider_w8a8_runtime_quantization():
     validate_quantization(bits=8, group_size=0, mode="cider-w8a8")
+    validate_quantization(bits=8, group_size=0, mode="cider-w8a8", clip_percentile=99.9)
 
     with pytest.raises(ValueError, match="requires bits=8"):
         validate_quantization(bits=4, group_size=0, mode="cider-w8a8")
 
     with pytest.raises(ValueError, match="group_size"):
         validate_quantization(bits=8, group_size=32, mode="cider-w8a8")
+
+    with pytest.raises(ValueError, match="only supported"):
+        validate_quantization(bits=8, group_size=64, mode="cider-w8a8", clip_percentile=99.9)
+
+    with pytest.raises(ValueError, match="range"):
+        validate_quantization(bits=8, group_size=0, mode="cider-w8a8", clip_percentile=101.0)
 
 
 def test_validate_cider_w4a8_runtime_quantization():
@@ -34,6 +41,11 @@ def test_validate_cider_w4a8_runtime_quantization():
 
     with pytest.raises(ValueError, match="currently requires group_size=0"):
         validate_quantization(bits=4, group_size=64, mode="cider-w4a8")
+
+
+def test_reject_clip_percentile_for_mlx_quantization():
+    with pytest.raises(ValueError, match="only supported"):
+        validate_quantization(bits=8, group_size=64, mode="affine", clip_percentile=99.9)
 
 
 def test_quantize_dry_run_writes_planned_manifest(tmp_path):

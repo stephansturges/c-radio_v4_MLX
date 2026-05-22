@@ -27,13 +27,21 @@ class QuantizationRequest:
     bits: int | None = 8
     group_size: int = 64
     mode: str = "affine"
+    clip_percentile: float | None = None
     dry_run: bool = False
 
 
-def validate_quantization(bits: int | None, group_size: int, mode: str) -> None:
+def validate_quantization(
+    bits: int | None,
+    group_size: int,
+    mode: str,
+    clip_percentile: float | None = None,
+) -> None:
     if mode not in QUANTIZATION_MODES:
         known = ", ".join(sorted(QUANTIZATION_MODES))
         raise ValueError(f"unsupported quantization mode={mode!r}; known: {known}")
+    if clip_percentile is not None and not (0.0 < clip_percentile <= 100.0):
+        raise ValueError("clip_percentile must be in the range (0, 100]")
     if mode in {"cider-w8a8", "cider-w4a8"}:
         required_bits = 8 if mode == "cider-w8a8" else 4
         if bits != required_bits:
@@ -42,7 +50,11 @@ def validate_quantization(bits: int | None, group_size: int, mode: str) -> None:
             raise ValueError(f"{mode} group_size must be one of {sorted(CIDER_GROUP_SIZES)}")
         if mode == "cider-w4a8" and group_size != 0:
             raise ValueError("cider-w4a8 currently requires group_size=0")
+        if clip_percentile is not None and (mode != "cider-w8a8" or group_size != 0):
+            raise ValueError("clip_percentile is only supported for cider-w8a8 group_size=0")
         return
+    if clip_percentile is not None:
+        raise ValueError("clip_percentile is only supported for cider-w8a8")
     if group_size <= 0:
         raise ValueError("group_size must be positive")
     if mode == "affine" and bits not in AFFINE_BITS:
@@ -56,7 +68,12 @@ def validate_quantization(bits: int | None, group_size: int, mode: str) -> None:
 
 
 def quantize_bundle(request: QuantizationRequest) -> Path:
-    validate_quantization(request.bits, request.group_size, request.mode)
+    validate_quantization(
+        request.bits,
+        request.group_size,
+        request.mode,
+        clip_percentile=request.clip_percentile,
+    )
     source_manifest = BundleManifest.load(request.model)
     source_dir = request.model if request.model.is_dir() else request.model.parent
     source_weights = source_dir / "model.safetensors"
@@ -76,6 +93,7 @@ def quantize_bundle(request: QuantizationRequest) -> Path:
         group_size=request.group_size,
         bits=request.bits,
         mode=request.mode,
+        clip_percentile=request.clip_percentile,
     )
 
     source_files = {
@@ -111,6 +129,8 @@ def quantize_bundle(request: QuantizationRequest) -> Path:
                 else "symmetric_per_group",
             }
         )
+        if request.clip_percentile is not None:
+            quantization["clip_percentile"] = request.clip_percentile
 
     quantized = BundleManifest(
         model_id=source_manifest.model_id,
@@ -139,6 +159,7 @@ def quantize_safetensors(
     group_size: int,
     bits: int,
     mode: str = "affine",
+    clip_percentile: float | None = None,
 ) -> dict[str, int]:
     import numpy as np
     from safetensors import safe_open
@@ -164,7 +185,11 @@ def quantize_safetensors(
                         stats["padded_tensors"] += 1
                         stats["padded_features"] += pad_features
                     if mode == "cider-w8a8":
-                        qweight, scales = _quantize_cider_w8a8(matrix, group_size)
+                        qweight, scales = _quantize_cider_w8a8(
+                            matrix,
+                            group_size,
+                            clip_percentile=clip_percentile,
+                        )
                         tensors[f"{prefix}.cider_weight"] = qweight
                         tensors[f"{prefix}.cider_scale"] = scales
                         tensors[f"{prefix}.cider_group_size"] = np.array(
@@ -263,7 +288,11 @@ def _pad_numpy_matrix(array, group_size: int):
     return np.concatenate([array, padding], axis=-1).astype(np.float32), pad_features
 
 
-def _quantize_cider_w8a8(matrix, group_size: int):
+def _quantize_cider_w8a8(
+    matrix,
+    group_size: int,
+    clip_percentile: float | None = None,
+):
     if group_size == 0:
         try:
             from cider.ops import quantize_weight_int8
@@ -271,7 +300,7 @@ def _quantize_cider_w8a8(matrix, group_size: int):
             raise RuntimeError(
                 "cider-w8a8 quantization requires the optional Cider package"
             ) from exc
-        qweight, scales = quantize_weight_int8(matrix)
+        qweight, scales = quantize_weight_int8(matrix, clip_percentile=clip_percentile)
         return qweight, scales
     return _symmetric_quantize_pergroup(matrix, group_size)
 

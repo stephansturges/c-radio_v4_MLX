@@ -32,6 +32,10 @@ https://github.com/stephansturges/c-radio_v4_MLX
 | `h/8bit-affine` | `nvidia/C-RADIOv4-H` | 8-bit affine, group size 64 | Compact/high-precision |
 | `so400m/cider-w8a8` | `nvidia/C-RADIOv4-SO400M` | Cider W8A8, per-channel | M5+ compact/runtime low-bit |
 | `h/cider-w8a8` | `nvidia/C-RADIOv4-H` | Cider W8A8, per-channel | M5+ compact/runtime low-bit |
+| `so400m/cider-w8a8-g128` | `nvidia/C-RADIOv4-SO400M` | Cider W8A8, group size 128 | M5+ balanced precision/speed |
+| `h/cider-w8a8-g128` | `nvidia/C-RADIOv4-H` | Cider W8A8, group size 128 | M5+ balanced precision/speed |
+| `so400m/cider-w8a8-p9999` | `nvidia/C-RADIOv4-SO400M` | Cider W8A8, 99.99 percentile clip | M5+ fastest experimental |
+| `h/cider-w8a8-p9999` | `nvidia/C-RADIOv4-H` | Cider W8A8, 99.99 percentile clip | M5+ fastest experimental |
 | `so400m/mxfp8` | `nvidia/C-RADIOv4-SO400M` | `mxfp8`, group size 32 | Experimental/lower precision |
 | `h/mxfp8` | `nvidia/C-RADIOv4-H` | `mxfp8`, group size 32 | Experimental/lower precision |
 
@@ -72,6 +76,15 @@ Smoke-image Cider W8A8 precision versus local bf16 MLX at `512x512`:
 | `so400m/cider-w8a8` | 0.998164 | 0.998889 |
 | `h/cider-w8a8` | 0.997202 | 0.996210 |
 
+WALDO 12-image Cider W8A8 precision versus local bf16 MLX at `512x512`:
+
+| Bundle | Summary cosine mean/min | Spatial cosine mean/min |
+| --- | ---: | ---: |
+| `so400m/cider-w8a8-g128` | 0.998808 / 0.998460 | 0.999269 / 0.998657 |
+| `h/cider-w8a8-g128` | 0.997935 / 0.997436 | 0.997821 / 0.996704 |
+| `so400m/cider-w8a8-p9999` | 0.998638 / 0.998112 | 0.999240 / 0.998586 |
+| `h/cider-w8a8-p9999` | 0.997642 / 0.996978 | 0.997628 / 0.996634 |
+
 ## Speed Summary
 
 MLX measurements on Apple M5 Max at `512x512`, batch 1:
@@ -82,6 +95,10 @@ MLX measurements on Apple M5 Max at `512x512`, batch 1:
 | `h/8bit-affine` | 74.2 ms | 13.5 images/s |
 | `so400m/cider-w8a8` | 32.5 ms | 30.8 images/s |
 | `h/cider-w8a8` | 47.1 ms | 21.2 images/s |
+| `so400m/cider-w8a8-g128` | 31.3 ms | 32.0 images/s |
+| `h/cider-w8a8-g128` | 48.3 ms | 20.7 images/s |
+| `so400m/cider-w8a8-p9999` | 29.8 ms | 33.5 images/s |
+| `h/cider-w8a8-p9999` | 43.7 ms | 22.9 images/s |
 | `so400m/mxfp8` | 49.8 ms | 20.1 images/s |
 | `h/mxfp8` | 52.6 ms | 19.0 images/s |
 
@@ -104,6 +121,10 @@ cradio-mlx embed \
   --dtype bfloat16 \
   --save-npz embedding.npz
 ```
+
+The g128 variants are the balanced Cider choice. The p99.99 variants are faster and
+slightly lower precision; validate them against downstream task metrics before replacing
+bf16 or g128.
 
 Use `--backend mlx-h` for the H model:
 

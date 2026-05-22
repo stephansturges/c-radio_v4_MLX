@@ -15,6 +15,10 @@ Apple M5+ runtime low-bit bundles to upload:
 
 - `bundles/c-radiov4-so400m-cider-w8a8`
 - `bundles/c-radiov4-h-cider-w8a8`
+- `bundles/c-radiov4-so400m-cider-w8a8-g128`
+- `bundles/c-radiov4-h-cider-w8a8-g128`
+- `bundles/c-radiov4-so400m-cider-w8a8-p9999`
+- `bundles/c-radiov4-h-cider-w8a8-p9999`
 
 Experimental `mxfp8` bundles, only upload if you want to publish the lower-precision
 tradeoff explicitly:
@@ -28,6 +32,10 @@ Remote repository structure:
 - `h/8bit-affine`
 - `so400m/cider-w8a8`
 - `h/cider-w8a8`
+- `so400m/cider-w8a8-g128`
+- `h/cider-w8a8-g128`
+- `so400m/cider-w8a8-p9999`
+- `h/cider-w8a8-p9999`
 - `so400m/mxfp8`
 - `h/mxfp8`
 
@@ -54,6 +62,10 @@ hf upload StephanST/C-radiov4_quantized bundles/c-radiov4-so400m-8bit so400m/8bi
 hf upload StephanST/C-radiov4_quantized bundles/c-radiov4-h-8bit h/8bit-affine --type model
 hf upload StephanST/C-radiov4_quantized bundles/c-radiov4-so400m-cider-w8a8 so400m/cider-w8a8 --type model
 hf upload StephanST/C-radiov4_quantized bundles/c-radiov4-h-cider-w8a8 h/cider-w8a8 --type model
+hf upload StephanST/C-radiov4_quantized bundles/c-radiov4-so400m-cider-w8a8-g128 so400m/cider-w8a8-g128 --type model
+hf upload StephanST/C-radiov4_quantized bundles/c-radiov4-h-cider-w8a8-g128 h/cider-w8a8-g128 --type model
+hf upload StephanST/C-radiov4_quantized bundles/c-radiov4-so400m-cider-w8a8-p9999 so400m/cider-w8a8-p9999 --type model
+hf upload StephanST/C-radiov4_quantized bundles/c-radiov4-h-cider-w8a8-p9999 h/cider-w8a8-p9999 --type model
 hf upload StephanST/C-radiov4_quantized bundles/c-radiov4-so400m-mxfp8 so400m/mxfp8 --type model
 hf upload StephanST/C-radiov4_quantized bundles/c-radiov4-h-mxfp8 h/mxfp8 --type model
 ```
@@ -79,6 +91,14 @@ Uploaded Cider W8A8 runtime bundles:
 - Root model card: https://huggingface.co/StephanST/C-radiov4_quantized/commit/3a7fe7204a0d7a3558d0796d124449b67e46a89c
 - `so400m/cider-w8a8`: https://huggingface.co/StephanST/C-radiov4_quantized/commit/039a7d2ed412819c4eed47600623237c9d1d7117
 - `h/cider-w8a8`: https://huggingface.co/StephanST/C-radiov4_quantized/commit/67437d9b33369a532cf080376ab0733827ea931f
+
+Uploaded Cider W8A8 g128 and p99.99 runtime bundles:
+
+- Root model card: https://huggingface.co/StephanST/C-radiov4_quantized/commit/4407ed839fd81d2a30245d138255d9abf09a590d
+- `so400m/cider-w8a8-g128`: https://huggingface.co/StephanST/C-radiov4_quantized/commit/b96bc6b10262f48a0bb4e06319ef4b22febbfbe9
+- `h/cider-w8a8-g128`: https://huggingface.co/StephanST/C-radiov4_quantized/commit/3a1fede10427c318b9da92f7615194292418169a
+- `so400m/cider-w8a8-p9999`: https://huggingface.co/StephanST/C-radiov4_quantized/commit/e526cb59f320cb817e447296553f87d1565196f3
+- `h/cider-w8a8-p9999`: https://huggingface.co/StephanST/C-radiov4_quantized/commit/df33001fde9cff40dd8310a3f0095c69a5221413
 
 The model cards must preserve upstream NVIDIA provenance. The repository code is MIT
 licensed, but the model weights and converted bundles remain governed by the NVIDIA Open

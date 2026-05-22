@@ -26,6 +26,10 @@ Bundle paths in that repository:
 | `h/8bit-affine` | C-RADIOv4-H | 8-bit affine, group size 64 | Compact/high-precision |
 | `so400m/cider-w8a8` | C-RADIOv4-SO400M | Cider W8A8, per-channel | M5+ compact/sometimes faster |
 | `h/cider-w8a8` | C-RADIOv4-H | Cider W8A8, per-channel | M5+ compact/faster |
+| `so400m/cider-w8a8-g128` | C-RADIOv4-SO400M | Cider W8A8, group size 128 | M5+ balanced precision/speed |
+| `h/cider-w8a8-g128` | C-RADIOv4-H | Cider W8A8, group size 128 | M5+ balanced precision/speed |
+| `so400m/cider-w8a8-p9999` | C-RADIOv4-SO400M | Cider W8A8, 99.99 percentile clip | M5+ fastest experimental |
+| `h/cider-w8a8-p9999` | C-RADIOv4-H | Cider W8A8, 99.99 percentile clip | M5+ fastest experimental |
 | `so400m/mxfp8` | C-RADIOv4-SO400M | `mxfp8`, group size 32 | Experimental/lower precision |
 | `h/mxfp8` | C-RADIOv4-H | `mxfp8`, group size 32 | Experimental/lower precision |
 
@@ -80,9 +84,13 @@ Local benchmark environment:
 | C-RADIOv4-SO400M | bf16 | 32.7 ms | 30.6 images/s | fastest 512px SO400M tier measured |
 | C-RADIOv4-SO400M | HF `so400m/8bit-affine` | 49.6 ms | 20.2 images/s | packed MLX weight-only runtime; high precision |
 | C-RADIOv4-SO400M | HF `so400m/cider-w8a8` | 32.5 ms | 30.8 images/s | real W8A8 runtime; smaller, roughly matches bf16 here |
+| C-RADIOv4-SO400M | HF `so400m/cider-w8a8-g128` | 31.3 ms | 32.0 images/s | balanced Cider W8A8 |
+| C-RADIOv4-SO400M | HF `so400m/cider-w8a8-p9999` | 29.8 ms | 33.5 images/s | fastest Cider W8A8; more drift |
 | C-RADIOv4-H | bf16 | 53.7 ms | 18.6 images/s | strong baseline |
 | C-RADIOv4-H | HF `h/8bit-affine` | 74.2 ms | 13.5 images/s | packed MLX weight-only runtime; high precision |
 | C-RADIOv4-H | HF `h/cider-w8a8` | 47.1 ms | 21.2 images/s | real W8A8 runtime; modestly faster than bf16 |
+| C-RADIOv4-H | HF `h/cider-w8a8-g128` | 48.3 ms | 20.7 images/s | balanced Cider W8A8 |
+| C-RADIOv4-H | HF `h/cider-w8a8-p9999` | 43.7 ms | 22.9 images/s | fastest Cider W8A8; more drift |
 
 ### Best Matrix Throughput
 
@@ -91,9 +99,11 @@ Local benchmark environment:
 | C-RADIOv4-SO400M | bf16 | 256 | 4 | 27.6 ms | 144.9 images/s |
 | C-RADIOv4-SO400M | HF `so400m/8bit-affine` | 256 | 4 | 35.0 ms | 114.3 images/s |
 | C-RADIOv4-SO400M | HF `so400m/cider-w8a8` | 256 | 4 | 27.1 ms | 147.8 images/s |
+| C-RADIOv4-SO400M | HF `so400m/cider-w8a8-p9999` | 256 | 4 | 24.8 ms | 161.4 images/s |
 | C-RADIOv4-H | bf16 | 256 | 4 | 42.0 ms | 95.2 images/s |
 | C-RADIOv4-H | HF `h/8bit-affine` | 256 | 4 | 59.0 ms | 67.8 images/s |
 | C-RADIOv4-H | HF `h/cider-w8a8` | 256 | 4 | 37.4 ms | 106.9 images/s |
+| C-RADIOv4-H | HF `h/cider-w8a8-p9999` | 256 | 4 | 33.8 ms | 118.3 images/s |
 
 MLX `0.31.2` is installed and current. Its newer `mxfp8`/`nvfp4` path is available, and
 `quantize_input=True` is documented only for `mxfp8` and `nvfp4` linear layers. For this
@@ -121,6 +131,10 @@ same principle only where the Apple/MLX kernel layer can actually execute it.
 W4A8 was also tested. It cut bundle and active weight memory further, but it was slower
 end-to-end and failed precision gates, so it is not a supported artifact.
 
+The larger-batch check did not reveal hidden throughput wins for Cider. At 512px batch
+8/16, bf16 remained best for SO400M, while H Cider variants were only roughly comparable.
+For this implementation, batch 1-4 is the useful latency/throughput zone.
+
 ### Quantized Precision
 
 Quantized formats versus the bf16 MLX bundle at `512x512`:
@@ -138,8 +152,12 @@ Smoke-image 8-bit versus bf16 precision at `512x512`:
 | --- | --- | ---: | ---: |
 | C-RADIOv4-SO400M | 8-bit affine | 0.999879 | 0.999778 |
 | C-RADIOv4-SO400M | Cider W8A8 | 0.998164 | 0.998889 |
+| C-RADIOv4-SO400M | Cider W8A8 g128 | 0.998630 | 0.998837 |
+| C-RADIOv4-SO400M | Cider W8A8 p99.99 | 0.998565 | 0.998815 |
 | C-RADIOv4-H | 8-bit affine | 0.999886 | 0.999615 |
 | C-RADIOv4-H | Cider W8A8 | 0.997202 | 0.996210 |
+| C-RADIOv4-H | Cider W8A8 g128 | 0.997877 | 0.996008 |
+| C-RADIOv4-H | Cider W8A8 p99.99 | 0.997006 | 0.995913 |
 
 Rejected W4A8 smoke precision at `256x256`:
 
@@ -161,6 +179,9 @@ Parity against PyTorch/MPS at `512x512`, `bfloat16`:
 | --- | ---: | ---: | ---: | ---: |
 | C-RADIOv4-SO400M | 1.6 GB | 517 MB | 468 MB | 271 MB |
 | C-RADIOv4-H | 2.4 GB | 758 MB | 685 MB | 384 MB |
+
+Cider W8A8 g128 bundle sizes are 480 MB for SO400M and 702 MB for H. The p99.99
+clipped bundles are the same size as per-channel W8A8.
 
 Approximate MLX active memory immediately after loading weights:
 
@@ -245,6 +266,10 @@ snapshot_download(
         "h/8bit-affine/*",
         "so400m/cider-w8a8/*",
         "h/cider-w8a8/*",
+        "so400m/cider-w8a8-g128/*",
+        "h/cider-w8a8-g128/*",
+        "so400m/cider-w8a8-p9999/*",
+        "h/cider-w8a8-p9999/*",
         "so400m/mxfp8/*",
         "h/mxfp8/*",
     ],
@@ -258,6 +283,10 @@ Example checkpoint paths after download:
 - `bundles/hf-c-radiov4-quantized/h/8bit-affine`
 - `bundles/hf-c-radiov4-quantized/so400m/cider-w8a8`
 - `bundles/hf-c-radiov4-quantized/h/cider-w8a8`
+- `bundles/hf-c-radiov4-quantized/so400m/cider-w8a8-g128`
+- `bundles/hf-c-radiov4-quantized/h/cider-w8a8-g128`
+- `bundles/hf-c-radiov4-quantized/so400m/cider-w8a8-p9999`
+- `bundles/hf-c-radiov4-quantized/h/cider-w8a8-p9999`
 - `bundles/hf-c-radiov4-quantized/so400m/mxfp8`
 - `bundles/hf-c-radiov4-quantized/h/mxfp8`
 
@@ -379,6 +408,25 @@ cradio-mlx quantize \
   --mode cider-w8a8
 ```
 
+Build the balanced g128 or fastest p99.99 Cider variants:
+
+```sh
+cradio-mlx quantize \
+  --model bundles/c-radiov4-h-bf16 \
+  --out bundles/c-radiov4-h-cider-w8a8-g128 \
+  --bits 8 \
+  --group-size 128 \
+  --mode cider-w8a8
+
+cradio-mlx quantize \
+  --model bundles/c-radiov4-h-bf16 \
+  --out bundles/c-radiov4-h-cider-w8a8-p9999 \
+  --bits 8 \
+  --group-size 0 \
+  --mode cider-w8a8 \
+  --clip-percentile 99.99
+```
+
 Hugging Face upload notes and model-card README templates are in
 [docs/huggingface_upload.md](docs/huggingface_upload.md).
 
@@ -399,6 +447,8 @@ python scripts/benchmark_matrix.py \
   --compile \
   --summary reports/benchmark-matrix-fast-compiled.json
 ```
+
+Add `--include-cider` to include optional Cider W8A8 cases in the matrix.
 
 Run local parity tests. These skip automatically if the local checkpoints are absent:
 

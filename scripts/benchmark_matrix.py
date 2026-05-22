@@ -29,9 +29,44 @@ def main() -> int:
         type=Path,
         default=Path("bundles/c-radiov4-so400m-mxfp8"),
     )
+    parser.add_argument(
+        "--so400m-cider-w8a8",
+        type=Path,
+        default=Path("bundles/c-radiov4-so400m-cider-w8a8"),
+    )
+    parser.add_argument(
+        "--so400m-cider-w8a8-g128",
+        type=Path,
+        default=Path("bundles/c-radiov4-so400m-cider-w8a8-g128"),
+    )
+    parser.add_argument(
+        "--so400m-cider-w8a8-p9999",
+        type=Path,
+        default=Path("bundles/c-radiov4-so400m-cider-w8a8-p9999"),
+    )
     parser.add_argument("--h-bf16", type=Path, default=Path("bundles/c-radiov4-h-bf16"))
     parser.add_argument("--h-8bit", type=Path, default=Path("bundles/c-radiov4-h-8bit"))
     parser.add_argument("--h-mxfp8", type=Path, default=Path("bundles/c-radiov4-h-mxfp8"))
+    parser.add_argument(
+        "--h-cider-w8a8",
+        type=Path,
+        default=Path("bundles/c-radiov4-h-cider-w8a8"),
+    )
+    parser.add_argument(
+        "--h-cider-w8a8-g128",
+        type=Path,
+        default=Path("bundles/c-radiov4-h-cider-w8a8-g128"),
+    )
+    parser.add_argument(
+        "--h-cider-w8a8-p9999",
+        type=Path,
+        default=Path("bundles/c-radiov4-h-cider-w8a8-p9999"),
+    )
+    parser.add_argument(
+        "--include-cider",
+        action="store_true",
+        help="Include optional Cider W8A8 cases. Requires Cider on Apple M5+.",
+    )
     parser.add_argument("--image-sizes", nargs="+", type=int, default=[256, 512, 768])
     parser.add_argument("--batch-sizes", nargs="+", type=int, default=[1, 2, 4])
     parser.add_argument("--warmups", type=int, default=1)
@@ -50,6 +85,53 @@ def main() -> int:
         BenchmarkCase("h-8bit", "h", args.h_8bit, "bfloat16", "8bit-affine"),
         BenchmarkCase("h-mxfp8", "h", args.h_mxfp8, "bfloat16", "mxfp8"),
     ]
+    if args.include_cider:
+        cases.extend(
+            [
+                BenchmarkCase(
+                    "so400m-cider-w8a8",
+                    "so400m",
+                    args.so400m_cider_w8a8,
+                    "bfloat16",
+                    "cider-w8a8",
+                ),
+                BenchmarkCase(
+                    "so400m-cider-w8a8-g128",
+                    "so400m",
+                    args.so400m_cider_w8a8_g128,
+                    "bfloat16",
+                    "cider-w8a8-g128",
+                ),
+                BenchmarkCase(
+                    "so400m-cider-w8a8-p9999",
+                    "so400m",
+                    args.so400m_cider_w8a8_p9999,
+                    "bfloat16",
+                    "cider-w8a8-p9999",
+                ),
+                BenchmarkCase(
+                    "h-cider-w8a8",
+                    "h",
+                    args.h_cider_w8a8,
+                    "bfloat16",
+                    "cider-w8a8",
+                ),
+                BenchmarkCase(
+                    "h-cider-w8a8-g128",
+                    "h",
+                    args.h_cider_w8a8_g128,
+                    "bfloat16",
+                    "cider-w8a8-g128",
+                ),
+                BenchmarkCase(
+                    "h-cider-w8a8-p9999",
+                    "h",
+                    args.h_cider_w8a8_p9999,
+                    "bfloat16",
+                    "cider-w8a8-p9999",
+                ),
+            ]
+        )
 
     args.out_dir.mkdir(parents=True, exist_ok=True)
     rows: list[dict[str, Any]] = []

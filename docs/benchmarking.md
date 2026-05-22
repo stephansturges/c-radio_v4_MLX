@@ -38,9 +38,13 @@ Cider W8A8 is reported from the faster of compiled/non-compiled runs for that ce
 | C-RADIOv4-SO400M | bf16 | 32.7 ms | 30.6 images/s |
 | C-RADIOv4-SO400M | 8-bit affine packed | 49.6 ms | 20.2 images/s |
 | C-RADIOv4-SO400M | Cider W8A8 packed | 32.5 ms | 30.8 images/s |
+| C-RADIOv4-SO400M | Cider W8A8 g128 packed | 31.3 ms | 32.0 images/s |
+| C-RADIOv4-SO400M | Cider W8A8 p99.99 packed | 29.8 ms | 33.5 images/s |
 | C-RADIOv4-H | bf16 | 53.7 ms | 18.6 images/s |
 | C-RADIOv4-H | 8-bit affine packed | 74.2 ms | 13.5 images/s |
 | C-RADIOv4-H | Cider W8A8 packed | 47.1 ms | 21.2 images/s |
+| C-RADIOv4-H | Cider W8A8 g128 packed | 48.3 ms | 20.7 images/s |
+| C-RADIOv4-H | Cider W8A8 p99.99 packed | 43.7 ms | 22.9 images/s |
 
 The MLX affine and `mxfp8` bundles are actual packed low-bit runtime bundles, but they are
 weight-only. They reduce bundle size and runtime weight memory while leaving activations
@@ -49,6 +53,17 @@ encoder. Cider W8A8 is the useful low-bit runtime path found so far because it u
 weights and online int8 activation quantization on M5+ INT8 kernels. The gain is modest,
 not 10x, because attention, norms, GELU, residual traffic, and custom-kernel dispatch still
 remain outside a fused low-bit transformer block.
+
+Two additional Cider variants were tested:
+
+- g128 per-group W8A8 is the balanced choice: better 12-image precision than per-channel,
+  and faster than per-channel for SO400M and H batch throughput.
+- p99.99 per-channel clipping is the fastest tested Cider path, but it has more embedding
+  drift. p99.9 was much faster but failed precision expectations and should not be used
+  without downstream validation.
+
+Batch 8/16 did not reveal a hidden throughput tier. At 512px, SO400M bf16 remained faster
+than Cider at larger batches, and H Cider variants were only roughly comparable.
 
 Rejected Cider W4A8 measurements: SO400M `512x512` batch 1 was 42.0 ms and H was 61.2 ms,
 and both failed precision gates. Do not publish W4A8 as supported without calibration or
