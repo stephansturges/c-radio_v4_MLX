@@ -277,6 +277,9 @@ cradio-mlx quantize \
   --mode mxfp8
 ```
 
+Hugging Face upload notes and model-card README templates are in
+[docs/huggingface_upload.md](docs/huggingface_upload.md).
+
 Run the fast-kernel compiled benchmark matrix:
 
 ```sh

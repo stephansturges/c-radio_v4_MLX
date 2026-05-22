@@ -43,3 +43,18 @@ Local `512x512`, batch-1, fast-kernel compiled-forward results on Apple Silicon:
 bf16 on MLX GPU. Weight-only `mxfp8` is also slower than bf16 and materially lower
 precision for this model. Use fast-kernel compiled bf16 for latency-sensitive local
 inference.
+
+## Remaining Speed Levers Checked
+
+The remaining low-risk kernel substitutions did not produce a useful speedup:
+
+- MLX `conv2d` patch embedding matches the current patch embed numerically but was slightly
+  slower than the existing im2patch plus dense matmul path at 512px.
+- `mlx.nn.gelu` was effectively neutral versus the local exact GELU expression.
+- `mlx.nn.gelu_approx` was slower in this graph and introduced measurable drift.
+- `mlx.nn.gelu_fast_approx` was marginally faster in isolation but failed precision
+  expectations, with SO400M smoke-output cosine around `0.97` summary / `0.98` spatial.
+
+The next non-trivial fixed-contract latency work would require custom fused Metal kernels
+or a model-level approximation decision. The safe production path remains fast-kernel
+compiled bf16.
