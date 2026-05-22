@@ -14,6 +14,19 @@ Official checkpoints live on Hugging Face:
 - `nvidia/C-RADIOv4-SO400M`: https://huggingface.co/nvidia/C-RADIOv4-SO400M
 - `nvidia/C-RADIOv4-H`: https://huggingface.co/nvidia/C-RADIOv4-H
 
+Published quantized MLX bundles live here:
+
+- `StephanST/C-radiov4_quantized`: https://huggingface.co/StephanST/C-radiov4_quantized
+
+Bundle paths in that repository:
+
+| Path | Model | Format | Recommended use |
+| --- | --- | --- | --- |
+| `so400m/8bit-affine` | C-RADIOv4-SO400M | 8-bit affine, group size 64 | Compact/high-precision |
+| `h/8bit-affine` | C-RADIOv4-H | 8-bit affine, group size 64 | Compact/high-precision |
+| `so400m/mxfp8` | C-RADIOv4-SO400M | `mxfp8`, group size 32 | Experimental/lower precision |
+| `h/mxfp8` | C-RADIOv4-H | `mxfp8`, group size 32 | Experimental/lower precision |
+
 Pinned revisions used for current parity and benchmark runs:
 
 - SO400M: `c0457f5dc26ca145f954cd4fc5bb6114e5705ad8`
@@ -55,25 +68,25 @@ Local benchmark environment:
 
 ### 512px Batch-1 Speed
 
-| Model | Bundle | p50 latency | Throughput | Notes |
+| Model | Artifact | p50 latency | Throughput | Notes |
 | --- | --- | ---: | ---: | --- |
 | C-RADIOv4-SO400M | bf16 | 32.4 ms | 30.9 images/s | best speed path at same output contract |
-| C-RADIOv4-SO400M | 8-bit affine | 51.6 ms | 19.4 images/s | compact/high-precision tier |
-| C-RADIOv4-SO400M | mxfp8 | 62.5 ms | 16.0 images/s | experimental; lower precision |
+| C-RADIOv4-SO400M | HF `so400m/8bit-affine` | 51.6 ms | 19.4 images/s | compact/high-precision tier |
+| C-RADIOv4-SO400M | HF `so400m/mxfp8` | 62.5 ms | 16.0 images/s | experimental; lower precision |
 | C-RADIOv4-H | bf16 | 51.9 ms | 19.3 images/s | best speed path at same output contract |
-| C-RADIOv4-H | 8-bit affine | 73.2 ms | 13.7 images/s | compact/high-precision tier |
-| C-RADIOv4-H | mxfp8 | 63.5 ms | 15.8 images/s | experimental; lower precision |
+| C-RADIOv4-H | HF `h/8bit-affine` | 73.2 ms | 13.7 images/s | compact/high-precision tier |
+| C-RADIOv4-H | HF `h/mxfp8` | 63.5 ms | 15.8 images/s | experimental; lower precision |
 
 ### Best Matrix Throughput
 
-| Model | Bundle | Resolution | Batch | p50 batch latency | Throughput |
+| Model | Artifact | Resolution | Batch | p50 batch latency | Throughput |
 | --- | --- | ---: | ---: | ---: | ---: |
 | C-RADIOv4-SO400M | bf16 | 256 | 4 | 27.2 ms | 146.9 images/s |
-| C-RADIOv4-SO400M | 8-bit affine | 256 | 4 | 39.4 ms | 101.4 images/s |
-| C-RADIOv4-SO400M | mxfp8 | 256 | 4 | 58.7 ms | 68.2 images/s |
+| C-RADIOv4-SO400M | HF `so400m/8bit-affine` | 256 | 4 | 39.4 ms | 101.4 images/s |
+| C-RADIOv4-SO400M | HF `so400m/mxfp8` | 256 | 4 | 58.7 ms | 68.2 images/s |
 | C-RADIOv4-H | bf16 | 256 | 4 | 39.5 ms | 101.4 images/s |
-| C-RADIOv4-H | 8-bit affine | 256 | 4 | 56.7 ms | 70.5 images/s |
-| C-RADIOv4-H | mxfp8 | 256 | 4 | 50.1 ms | 79.9 images/s |
+| C-RADIOv4-H | HF `h/8bit-affine` | 256 | 4 | 56.7 ms | 70.5 images/s |
+| C-RADIOv4-H | HF `h/mxfp8` | 256 | 4 | 50.1 ms | 79.9 images/s |
 
 MLX `0.31.2` is installed and current. Its newer `mxfp8`/`nvfp4` path is available, and
 `quantize_input=True` is documented only for `mxfp8` and `nvfp4` linear layers. For this
@@ -81,6 +94,15 @@ ViT workload, weight-only `mxfp8` was smaller but lower precision and slower tha
 `nvfp4`/`mxfp4` did not meet precision gates in smoke checks. The useful performance win
 came from MLX fast attention/layernorm plus compilation, not from the quantized matmul
 formats.
+
+The quantized HF artifacts improve storage size, not end-to-end throughput. C-RADIOv4 is a
+dense ViT encoder: attention, layernorm, GELU, residual traffic, image patching, and
+activation movement remain in bf16 even when linear weights are packed. At these 512px
+batch-1 and small-batch shapes, Apple GPU bf16 dense matmul is already highly optimized,
+while weight-only quantized matmul adds per-group scale/bias handling and cannot fuse away
+the rest of the transformer block. The result is smaller bundles and high precision for
+8-bit affine, but not "super-duper" throughput gains. Throughput improves most from
+compiled bf16, fused attention/layernorm, lower resolution, and batching.
 
 The current 10x-class speed lever is workload-level: compiled bf16 plus lower resolution
 and batching gives SO400M about 6.9 ms per image at 256px batch 4, versus the earlier
@@ -91,12 +113,12 @@ honest 10x speedup was found; bf16 remains the fastest measured mode.
 
 Quantized formats versus the bf16 MLX bundle at `512x512`:
 
-| Model | Format | Images | Summary cosine mean/min | Spatial cosine mean/min |
+| Artifact | Format | Images | Summary cosine mean/min | Spatial cosine mean/min |
 | --- | --- | ---: | ---: | ---: |
-| C-RADIOv4-SO400M | 8-bit affine | 12 WALDO crops | 0.999907 / 0.999868 | 0.999930 / 0.999876 |
-| C-RADIOv4-H | 8-bit affine | 12 WALDO crops | 0.999899 / 0.999878 | 0.999830 / 0.999764 |
-| C-RADIOv4-SO400M | mxfp8 | 12 WALDO crops | 0.989820 / 0.950717 | 0.993502 / 0.977879 |
-| C-RADIOv4-H | mxfp8 | 12 WALDO crops | 0.990217 / 0.974710 | 0.988696 / 0.976071 |
+| HF `so400m/8bit-affine` | 8-bit affine | 12 WALDO crops | 0.999907 / 0.999868 | 0.999930 / 0.999876 |
+| HF `h/8bit-affine` | 8-bit affine | 12 WALDO crops | 0.999899 / 0.999878 | 0.999830 / 0.999764 |
+| HF `so400m/mxfp8` | `mxfp8` | 12 WALDO crops | 0.989820 / 0.950717 | 0.993502 / 0.977879 |
+| HF `h/mxfp8` | `mxfp8` | 12 WALDO crops | 0.990217 / 0.974710 | 0.988696 / 0.976071 |
 
 Smoke-image 8-bit versus bf16 precision at `512x512`:
 
@@ -169,6 +191,33 @@ snapshot_download(
 )
 PY
 ```
+
+Download the published quantized MLX bundles:
+
+```sh
+python - <<'PY'
+from huggingface_hub import snapshot_download
+
+snapshot_download(
+    repo_id="StephanST/C-radiov4_quantized",
+    local_dir="bundles/hf-c-radiov4-quantized",
+    allow_patterns=[
+        "README.md",
+        "so400m/8bit-affine/*",
+        "h/8bit-affine/*",
+        "so400m/mxfp8/*",
+        "h/mxfp8/*",
+    ],
+)
+PY
+```
+
+Example checkpoint paths after download:
+
+- `bundles/hf-c-radiov4-quantized/so400m/8bit-affine`
+- `bundles/hf-c-radiov4-quantized/h/8bit-affine`
+- `bundles/hf-c-radiov4-quantized/so400m/mxfp8`
+- `bundles/hf-c-radiov4-quantized/h/mxfp8`
 
 ## CLI
 
