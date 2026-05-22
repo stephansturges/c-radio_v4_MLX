@@ -87,6 +87,12 @@ def build_parser() -> argparse.ArgumentParser:
     embed.add_argument("--image", required=True, type=Path)
     embed.add_argument("--image-size", nargs="+", type=int, default=[512])
     embed.add_argument("--dtype", default="bfloat16")
+    embed.add_argument(
+        "--quantized-runtime",
+        choices=["packed", "dequantize"],
+        default="packed",
+        help="For MLX quantized bundles, use packed quantized matmul or dequantize at load.",
+    )
     embed.add_argument("--device", default="auto")
     embed.add_argument("--save-npz", type=Path)
 
@@ -146,6 +152,12 @@ def build_parser() -> argparse.ArgumentParser:
     mlx_bench.add_argument("--image-sizes", nargs="+", type=int)
     mlx_bench.add_argument("--batch-size", nargs="+", type=int, default=[1])
     mlx_bench.add_argument("--dtype", default="bfloat16")
+    mlx_bench.add_argument(
+        "--quantized-runtime",
+        choices=["packed", "dequantize"],
+        default="packed",
+        help="For quantized bundles, use packed quantized matmul or dequantize at load.",
+    )
     mlx_bench.add_argument("--warmups", type=int, default=1)
     mlx_bench.add_argument("--repeats", type=int, default=3)
     mlx_bench.add_argument("--no-materialize", action="store_true")
@@ -241,6 +253,7 @@ def main(argv: list[str] | None = None) -> int:
                 args.checkpoint,
                 dtype=args.dtype,
                 revision=args.revision,
+                quantized_runtime=args.quantized_runtime,
             ).encode_image(args.image, image_size=_image_size(args.image_size))
         else:
             result = CRadioEncoder.from_pretrained(
@@ -328,6 +341,7 @@ def main(argv: list[str] | None = None) -> int:
                 image=image,
                 image_size=image_size,
                 dtype=args.dtype,
+                quantized_runtime=args.quantized_runtime,
                 batch_size=args.batch_size,
                 warmups=args.warmups,
                 repeats=args.repeats,

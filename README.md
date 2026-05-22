@@ -22,10 +22,10 @@ Bundle paths in that repository:
 
 | Path | Model | Format | Recommended use |
 | --- | --- | --- | --- |
-| `so400m/8bit-affine` | C-RADIOv4-SO400M | 8-bit affine, group size 64 | Compact/high-precision |
-| `h/8bit-affine` | C-RADIOv4-H | 8-bit affine, group size 64 | Compact/high-precision |
-| `so400m/mxfp8` | C-RADIOv4-SO400M | `mxfp8`, group size 32 | Experimental/lower precision |
-| `h/mxfp8` | C-RADIOv4-H | `mxfp8`, group size 32 | Experimental/lower precision |
+| `so400m/8bit-affine` | C-RADIOv4-SO400M | 8-bit affine, group size 64 | Compact/high-precision; dense-speed runtime available |
+| `h/8bit-affine` | C-RADIOv4-H | 8-bit affine, group size 64 | Compact/high-precision; dense-speed runtime available |
+| `so400m/mxfp8` | C-RADIOv4-SO400M | `mxfp8`, group size 32 | Experimental/lower precision; dense-speed runtime available |
+| `h/mxfp8` | C-RADIOv4-H | `mxfp8`, group size 32 | Experimental/lower precision; dense-speed runtime available |
 
 Pinned revisions used for current parity and benchmark runs:
 
@@ -48,6 +48,8 @@ Implemented:
 - safetensors key/shape audit for the HF-to-MLX mapping pass
 - self-contained MLX bundle writer for local Hugging Face checkpoint directories
 - 8-bit affine and `mxfp8` MLX packed-weight quantization for supported linear layers
+- optional `--quantized-runtime dequantize` path that loads compact quantized bundles and
+  expands weights once so inference uses dense MLX kernels
 - fused MLX fast attention and layernorm kernels in the native forward path
 - broad MLX benchmark matrix by model, resolution, batch size, dtype, and quantization mode
 - local-checkpoint parity tests that skip when checkpoints are absent
@@ -68,46 +70,59 @@ Local benchmark environment:
 
 ### 512px Batch-1 Speed
 
-| Model | Artifact | p50 latency | Throughput | Notes |
-| --- | --- | ---: | ---: | --- |
-| C-RADIOv4-SO400M | bf16 | 32.4 ms | 30.9 images/s | best speed path at same output contract |
-| C-RADIOv4-SO400M | HF `so400m/8bit-affine` | 51.6 ms | 19.4 images/s | compact/high-precision tier |
-| C-RADIOv4-SO400M | HF `so400m/mxfp8` | 62.5 ms | 16.0 images/s | experimental; lower precision |
-| C-RADIOv4-H | bf16 | 51.9 ms | 19.3 images/s | best speed path at same output contract |
-| C-RADIOv4-H | HF `h/8bit-affine` | 73.2 ms | 13.7 images/s | compact/high-precision tier |
-| C-RADIOv4-H | HF `h/mxfp8` | 63.5 ms | 15.8 images/s | experimental; lower precision |
+| Model | Artifact | Runtime | p50 latency | Throughput | Notes |
+| --- | --- | --- | ---: | ---: | --- |
+| C-RADIOv4-SO400M | bf16 | dense | 32.4 ms | 30.9 images/s | fastest same-contract path |
+| C-RADIOv4-SO400M | HF `so400m/8bit-affine` | packed | 47.1 ms | 21.2 images/s | compact runtime memory, slower kernels |
+| C-RADIOv4-SO400M | HF `so400m/8bit-affine` | dequantize at load | 32.4 ms | 30.9 images/s | compact artifact, dense runtime memory |
+| C-RADIOv4-SO400M | HF `so400m/mxfp8` | packed | 49.8 ms | 20.1 images/s | experimental; lower precision |
+| C-RADIOv4-SO400M | HF `so400m/mxfp8` | dequantize at load | 32.5 ms | 30.8 images/s | compact artifact, dense runtime memory |
+| C-RADIOv4-H | bf16 | dense | 45.6 ms | 21.9 images/s | fastest same-contract path |
+| C-RADIOv4-H | HF `h/8bit-affine` | packed | 58.8 ms | 17.0 images/s | compact runtime memory, slower kernels |
+| C-RADIOv4-H | HF `h/8bit-affine` | dequantize at load | 45.5 ms | 22.0 images/s | compact artifact, dense runtime memory |
+| C-RADIOv4-H | HF `h/mxfp8` | packed | 52.6 ms | 19.0 images/s | experimental; lower precision |
+| C-RADIOv4-H | HF `h/mxfp8` | dequantize at load | 45.4 ms | 22.0 images/s | compact artifact, dense runtime memory |
 
 ### Best Matrix Throughput
 
-| Model | Artifact | Resolution | Batch | p50 batch latency | Throughput |
-| --- | --- | ---: | ---: | ---: | ---: |
-| C-RADIOv4-SO400M | bf16 | 256 | 4 | 27.2 ms | 146.9 images/s |
-| C-RADIOv4-SO400M | HF `so400m/8bit-affine` | 256 | 4 | 39.4 ms | 101.4 images/s |
-| C-RADIOv4-SO400M | HF `so400m/mxfp8` | 256 | 4 | 58.7 ms | 68.2 images/s |
-| C-RADIOv4-H | bf16 | 256 | 4 | 39.5 ms | 101.4 images/s |
-| C-RADIOv4-H | HF `h/8bit-affine` | 256 | 4 | 56.7 ms | 70.5 images/s |
-| C-RADIOv4-H | HF `h/mxfp8` | 256 | 4 | 50.1 ms | 79.9 images/s |
+| Model | Artifact | Runtime | Resolution | Batch | p50 batch latency | Throughput |
+| --- | --- | --- | ---: | ---: | ---: | ---: |
+| C-RADIOv4-SO400M | bf16 | dense | 256 | 4 | 27.2 ms | 146.8 images/s |
+| C-RADIOv4-SO400M | HF `so400m/8bit-affine` | packed | 256 | 4 | 34.9 ms | 114.5 images/s |
+| C-RADIOv4-SO400M | HF `so400m/8bit-affine` | dequantize at load | 256 | 4 | 27.3 ms | 146.5 images/s |
+| C-RADIOv4-SO400M | HF `so400m/mxfp8` | packed | 256 | 4 | 45.3 ms | 88.3 images/s |
+| C-RADIOv4-SO400M | HF `so400m/mxfp8` | dequantize at load | 256 | 4 | 27.3 ms | 146.4 images/s |
+| C-RADIOv4-H | bf16 | dense | 256 | 4 | 35.3 ms | 113.2 images/s |
+| C-RADIOv4-H | HF `h/8bit-affine` | packed | 256 | 4 | 47.4 ms | 84.3 images/s |
+| C-RADIOv4-H | HF `h/8bit-affine` | dequantize at load | 256 | 4 | 35.3 ms | 113.4 images/s |
+| C-RADIOv4-H | HF `h/mxfp8` | packed | 256 | 4 | 37.9 ms | 105.6 images/s |
+| C-RADIOv4-H | HF `h/mxfp8` | dequantize at load | 256 | 4 | 35.3 ms | 113.4 images/s |
 
 MLX `0.31.2` is installed and current. Its newer `mxfp8`/`nvfp4` path is available, and
 `quantize_input=True` is documented only for `mxfp8` and `nvfp4` linear layers. For this
-ViT workload, weight-only `mxfp8` was smaller but lower precision and slower than bf16;
-`nvfp4`/`mxfp4` did not meet precision gates in smoke checks. The useful performance win
-came from MLX fast attention/layernorm plus compilation, not from the quantized matmul
-formats.
+ViT workload, packed weight-only quantized matmul is still slower than dense bf16. C-RADIOv4
+is a dense ViT encoder: attention, layernorm, GELU, residual traffic, image patching, and
+activation movement remain in bf16 even when linear weights are packed. Apple GPU dense
+bf16 matmul is already highly optimized at these shapes, while packed quantized matmul adds
+per-group scale/bias handling.
 
-The quantized HF artifacts improve storage size, not end-to-end throughput. C-RADIOv4 is a
-dense ViT encoder: attention, layernorm, GELU, residual traffic, image patching, and
-activation movement remain in bf16 even when linear weights are packed. At these 512px
-batch-1 and small-batch shapes, Apple GPU bf16 dense matmul is already highly optimized,
-while weight-only quantized matmul adds per-group scale/bias handling and cannot fuse away
-the rest of the transformer block. The result is smaller bundles and high precision for
-8-bit affine, but not "super-duper" throughput gains. Throughput improves most from
-compiled bf16, fused attention/layernorm, lower resolution, and batching.
+The practical fix is runtime-specific:
 
-The current 10x-class speed lever is workload-level: compiled bf16 plus lower resolution
-and batching gives SO400M about 6.9 ms per image at 256px batch 4, versus the earlier
-PyTorch/MPS 512px batch-1 baseline of 120 ms. At the same 512px batch-1 contract, no
-honest 10x speedup was found; bf16 remains the fastest measured mode.
+- `--quantized-runtime packed` keeps weights packed during inference. It reduces artifact
+  size and runtime weight memory, but it is slower here.
+- `--quantized-runtime dequantize` loads the compact quantized artifact, expands quantized
+  weights once to bf16, and then uses the dense MLX path. It recovers bf16-class throughput
+  while giving up low-bit runtime memory.
+
+That is the same high-level tradeoff seen in many local Qwen/MLX workflows: low-bit LLM
+weights are valuable because they make large models fit and reduce memory bandwidth in
+token decode. For this C-RADIO ViT encoder, the model already fits and the measured
+same-contract speed path is dense kernels.
+
+The current 10x-class speed lever is workload-level: compiled dense kernels plus lower
+resolution and batching gives SO400M about 6.8 ms per image at 256px batch 4, versus the
+earlier PyTorch/MPS 512px batch-1 baseline of 120 ms. At the same 512px batch-1 contract,
+the honest answer is roughly 32 ms/image for SO400M and 45 ms/image for H on this machine.
 
 ### Quantized Precision
 
@@ -115,10 +130,10 @@ Quantized formats versus the bf16 MLX bundle at `512x512`:
 
 | Artifact | Format | Images | Summary cosine mean/min | Spatial cosine mean/min |
 | --- | --- | ---: | ---: | ---: |
-| HF `so400m/8bit-affine` | 8-bit affine | 12 WALDO crops | 0.999907 / 0.999868 | 0.999930 / 0.999876 |
-| HF `h/8bit-affine` | 8-bit affine | 12 WALDO crops | 0.999899 / 0.999878 | 0.999830 / 0.999764 |
-| HF `so400m/mxfp8` | `mxfp8` | 12 WALDO crops | 0.989820 / 0.950717 | 0.993502 / 0.977879 |
-| HF `h/mxfp8` | `mxfp8` | 12 WALDO crops | 0.990217 / 0.974710 | 0.988696 / 0.976071 |
+| HF `so400m/8bit-affine` | 8-bit affine, dequantize runtime | 12 WALDO crops | 0.999913 / 0.999885 | 0.999927 / 0.999881 |
+| HF `h/8bit-affine` | 8-bit affine, dequantize runtime | 12 WALDO crops | 0.999907 / 0.999884 | 0.999828 / 0.999761 |
+| HF `so400m/mxfp8` | `mxfp8`, dequantize runtime | 12 WALDO crops | 0.989676 / 0.949449 | 0.993379 / 0.978096 |
+| HF `h/mxfp8` | `mxfp8`, dequantize runtime | 12 WALDO crops | 0.990272 / 0.974978 | 0.988784 / 0.976665 |
 
 Smoke-image 8-bit versus bf16 precision at `512x512`:
 
@@ -274,6 +289,22 @@ cradio-mlx mlx-benchmark \
   --dtype bfloat16 \
   --report reports/h-smoke-512-mlx-bf16-benchmark.json
 ```
+
+Use the compact quantized HF bundles with either runtime mode:
+
+```sh
+cradio-mlx embed \
+  --backend mlx-so400m \
+  --checkpoint bundles/hf-c-radiov4-quantized/so400m/8bit-affine \
+  --image image.jpg \
+  --image-size 512 \
+  --dtype bfloat16 \
+  --quantized-runtime dequantize \
+  --save-npz embedding.npz
+```
+
+`--quantized-runtime packed` is the compact runtime-memory mode. `dequantize` expands
+packed weights once during load and then uses the dense MLX kernels.
 
 Benchmark PyTorch/MPS:
 

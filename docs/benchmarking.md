@@ -30,19 +30,23 @@ python scripts/benchmark_matrix.py \
 
 Local `512x512`, batch-1, fast-kernel compiled-forward results on Apple Silicon:
 
-| Model | Bundle | p50 latency | Throughput |
-| --- | --- | ---: | ---: |
-| C-RADIOv4-SO400M | bf16 | 32.4 ms | 30.9 images/s |
-| C-RADIOv4-SO400M | 8-bit affine | 51.6 ms | 19.4 images/s |
-| C-RADIOv4-SO400M | mxfp8 | 62.5 ms | 16.0 images/s |
-| C-RADIOv4-H | bf16 | 51.9 ms | 19.3 images/s |
-| C-RADIOv4-H | 8-bit affine | 73.2 ms | 13.7 images/s |
-| C-RADIOv4-H | mxfp8 | 63.5 ms | 15.8 images/s |
+| Model | Bundle | Runtime | p50 latency | Throughput |
+| --- | --- | --- | ---: | ---: |
+| C-RADIOv4-SO400M | bf16 | dense | 32.4 ms | 30.9 images/s |
+| C-RADIOv4-SO400M | 8-bit affine | packed | 47.1 ms | 21.2 images/s |
+| C-RADIOv4-SO400M | 8-bit affine | dequantize at load | 32.4 ms | 30.9 images/s |
+| C-RADIOv4-SO400M | mxfp8 | packed | 49.8 ms | 20.1 images/s |
+| C-RADIOv4-SO400M | mxfp8 | dequantize at load | 32.5 ms | 30.8 images/s |
+| C-RADIOv4-H | bf16 | dense | 45.6 ms | 21.9 images/s |
+| C-RADIOv4-H | 8-bit affine | packed | 58.8 ms | 17.0 images/s |
+| C-RADIOv4-H | 8-bit affine | dequantize at load | 45.5 ms | 22.0 images/s |
+| C-RADIOv4-H | mxfp8 | packed | 52.6 ms | 19.0 images/s |
+| C-RADIOv4-H | mxfp8 | dequantize at load | 45.4 ms | 22.0 images/s |
 
-8-bit affine currently reduces bundle size and preserves precision but is slower than
-bf16 on MLX GPU. Weight-only `mxfp8` is also slower than bf16 and materially lower
-precision for this model. Use fast-kernel compiled bf16 for latency-sensitive local
-inference.
+8-bit affine reduces bundle size and preserves precision. In packed runtime mode it is
+slower than bf16 on MLX GPU for this ViT encoder. Use
+`--quantized-runtime dequantize` when you want compact downloads but latency comparable to
+bf16; it expands weights to bf16 at load, so runtime memory is not low-bit.
 
 ## Remaining Speed Levers Checked
 
@@ -56,5 +60,6 @@ The remaining low-risk kernel substitutions did not produce a useful speedup:
   expectations, with SO400M smoke-output cosine around `0.97` summary / `0.98` spatial.
 
 The next non-trivial fixed-contract latency work would require custom fused Metal kernels
-or a model-level approximation decision. The safe production path remains fast-kernel
-compiled bf16.
+or a model-level approximation decision. The safe production speed path is dense MLX
+kernels, either from bf16 bundles or from compact quantized bundles loaded with
+`--quantized-runtime dequantize`.

@@ -45,10 +45,22 @@ Against the local bf16 MLX bundle at `512x512` on 12 WALDO crop images:
 
 | Metric | Mean | Min |
 | --- | ---: | ---: |
-| Summary cosine | 0.989820 | 0.950717 |
-| Spatial cosine | 0.993502 | 0.977879 |
+| Summary cosine | 0.989676 | 0.949449 |
+| Spatial cosine | 0.993379 | 0.978096 |
 
 This is lower precision than the 8-bit affine bundle. Treat this as experimental.
+
+## Measured Speed
+
+Fast-kernel compiled-forward MLX measurements at `512x512`, batch 1:
+
+| Runtime | p50 latency | Throughput |
+| --- | ---: | ---: |
+| packed | 49.8 ms | 20.1 images/s |
+| dequantize at load | 32.5 ms | 30.8 images/s |
+
+`packed` keeps weights low-bit at runtime but is slower for this ViT encoder. Use
+`--quantized-runtime dequantize` when latency matters; it expands weights to bf16 at load.
 
 ## Usage
 
@@ -59,6 +71,7 @@ cradio-mlx embed \
   --image image.jpg \
   --image-size 512 \
   --dtype bfloat16 \
+  --quantized-runtime dequantize \
   --save-npz embedding.npz
 ```
 
