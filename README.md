@@ -280,6 +280,10 @@ cradio-mlx quantize \
 Hugging Face upload notes and model-card README templates are in
 [docs/huggingface_upload.md](docs/huggingface_upload.md).
 
+Uploaded quantized bundles are published at:
+
+https://huggingface.co/StephanST/C-radiov4_quantized
+
 Run the fast-kernel compiled benchmark matrix:
 
 ```sh
