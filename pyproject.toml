@@ -1,0 +1,54 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "cradio-mlx"
+version = "0.1.0"
+description = "Standalone Apple Silicon MLX runtime scaffold for NVIDIA C-RADIOv4 embeddings."
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "MIT"}
+authors = [{name = "cradio-mlx contributors"}]
+dependencies = [
+  "huggingface-hub",
+  "mlx",
+  "numpy",
+  "pillow",
+  "safetensors",
+]
+
+[project.optional-dependencies]
+reference = [
+  "einops",
+  "open-clip-torch",
+  "timm",
+  "torch",
+  "transformers",
+]
+dev = [
+  "pytest",
+  "ruff",
+]
+
+[project.scripts]
+cradio-mlx = "cradio_mlx.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/cradio_mlx"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+exclude = [
+  ".venv",
+  "checkpoints",
+  "vendor",
+  "reports",
+]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
