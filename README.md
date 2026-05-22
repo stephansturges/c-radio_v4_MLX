@@ -33,16 +33,12 @@ Implemented:
 - CLI/API for embedding, benchmarking, device inspection, and output comparison
 - fp32 and bf16 parity checks against PyTorch/MPS on the smoke image
 - safetensors key/shape audit for the HF-to-MLX mapping pass
-- bundle manifest read/write and bundle inspection utilities
-- manifest-only conversion bootstrap for local checkpoint directories
+- self-contained MLX bundle writer for local Hugging Face checkpoint directories
+- 8-bit affine and `mxfp8` MLX packed-weight quantization for supported linear layers
+- fused MLX fast attention and layernorm kernels in the native forward path
+- broad MLX benchmark matrix by model, resolution, batch size, dtype, and quantization mode
+- local-checkpoint parity tests that skip when checkpoints are absent
 - unit tests for shapes, manifests, preprocessing, CLI behavior, metrics, and MLX helpers
-
-Still open:
-
-- self-contained MLX bundle writer
-- 8-bit affine quantization
-- broader resolution and batch benchmark matrix
-- automated parity tests that run only when local checkpoints are present
 
 ## Performance
 
@@ -50,16 +46,64 @@ Local benchmark environment:
 
 - Apple Silicon, `mlx` default device `Device(gpu, 0)`
 - PyTorch backend device `mps`
-- image size `512x512`, batch size 1, dtype `bfloat16`
-- smoke fixture: `data/golden_images/smoke.jpg`
-- 1 warmup, 3 measured repeats
+- speed matrix images copied from
+  `/Users/stephansturges/Pictures/WALDO/WALDO_new_data_for_v4/cropped images`
+  into ignored `reports/local_waldo_crops/`
+- speed matrix: MLX fast kernels, compiled forward only, no output materialization,
+  2 warmups, 5 measured repeats
+- smoke parity fixture: `data/golden_images/smoke.jpg`
 
-| Model | Backend | Device | p50 latency | p95 latency | Load time | Output shapes |
-| --- | --- | --- | ---: | ---: | ---: | --- |
-| C-RADIOv4-SO400M | MLX | GPU | 46.5 ms | 46.7 ms | 0.29 s | summary `(1, 2304)`, spatial `(1, 1024, 1152)` |
-| C-RADIOv4-SO400M | PyTorch | MPS | 120.0 ms | 120.7 ms | 1.65 s | summary `(1, 2304)`, spatial `(1, 1024, 1152)` |
-| C-RADIOv4-H | MLX | GPU | 59.9 ms | 59.9 ms | 0.41 s | summary `(1, 2560)`, spatial `(1, 1024, 1280)` |
-| C-RADIOv4-H | PyTorch | MPS | 165.8 ms | 167.3 ms | 2.43 s | summary `(1, 2560)`, spatial `(1, 1024, 1280)` |
+### 512px Batch-1 Speed
+
+| Model | Bundle | p50 latency | Throughput | Notes |
+| --- | --- | ---: | ---: | --- |
+| C-RADIOv4-SO400M | bf16 | 32.4 ms | 30.9 images/s | best speed path at same output contract |
+| C-RADIOv4-SO400M | 8-bit affine | 51.6 ms | 19.4 images/s | compact/high-precision tier |
+| C-RADIOv4-SO400M | mxfp8 | 62.5 ms | 16.0 images/s | experimental; lower precision |
+| C-RADIOv4-H | bf16 | 51.9 ms | 19.3 images/s | best speed path at same output contract |
+| C-RADIOv4-H | 8-bit affine | 73.2 ms | 13.7 images/s | compact/high-precision tier |
+| C-RADIOv4-H | mxfp8 | 63.5 ms | 15.8 images/s | experimental; lower precision |
+
+### Best Matrix Throughput
+
+| Model | Bundle | Resolution | Batch | p50 batch latency | Throughput |
+| --- | --- | ---: | ---: | ---: | ---: |
+| C-RADIOv4-SO400M | bf16 | 256 | 4 | 27.2 ms | 146.9 images/s |
+| C-RADIOv4-SO400M | 8-bit affine | 256 | 4 | 39.4 ms | 101.4 images/s |
+| C-RADIOv4-SO400M | mxfp8 | 256 | 4 | 58.7 ms | 68.2 images/s |
+| C-RADIOv4-H | bf16 | 256 | 4 | 39.5 ms | 101.4 images/s |
+| C-RADIOv4-H | 8-bit affine | 256 | 4 | 56.7 ms | 70.5 images/s |
+| C-RADIOv4-H | mxfp8 | 256 | 4 | 50.1 ms | 79.9 images/s |
+
+MLX `0.31.2` is installed and current. Its newer `mxfp8`/`nvfp4` path is available, and
+`quantize_input=True` is documented only for `mxfp8` and `nvfp4` linear layers. For this
+ViT workload, weight-only `mxfp8` was smaller but lower precision and slower than bf16;
+`nvfp4`/`mxfp4` did not meet precision gates in smoke checks. The useful performance win
+came from MLX fast attention/layernorm plus compilation, not from the quantized matmul
+formats.
+
+The current 10x-class speed lever is workload-level: compiled bf16 plus lower resolution
+and batching gives SO400M about 6.9 ms per image at 256px batch 4, versus the earlier
+PyTorch/MPS 512px batch-1 baseline of 120 ms. At the same 512px batch-1 contract, no
+honest 10x speedup was found; bf16 remains the fastest measured mode.
+
+### Quantized Precision
+
+Quantized formats versus the bf16 MLX bundle at `512x512`:
+
+| Model | Format | Images | Summary cosine mean/min | Spatial cosine mean/min |
+| --- | --- | ---: | ---: | ---: |
+| C-RADIOv4-SO400M | 8-bit affine | 12 WALDO crops | 0.999907 / 0.999868 | 0.999930 / 0.999876 |
+| C-RADIOv4-H | 8-bit affine | 12 WALDO crops | 0.999899 / 0.999878 | 0.999830 / 0.999764 |
+| C-RADIOv4-SO400M | mxfp8 | 12 WALDO crops | 0.989820 / 0.950717 | 0.993502 / 0.977879 |
+| C-RADIOv4-H | mxfp8 | 12 WALDO crops | 0.990217 / 0.974710 | 0.988696 / 0.976071 |
+
+Smoke-image 8-bit versus bf16 precision at `512x512`:
+
+| Model | Summary cosine | Spatial cosine |
+| --- | ---: | ---: |
+| C-RADIOv4-SO400M | 0.999879 | 0.999778 |
+| C-RADIOv4-H | 0.999886 | 0.999615 |
 
 Parity against PyTorch/MPS at `512x512`, `bfloat16`:
 
@@ -67,6 +111,13 @@ Parity against PyTorch/MPS at `512x512`, `bfloat16`:
 | --- | ---: | ---: |
 | C-RADIOv4-SO400M MLX vs PyTorch/MPS | 0.999939 | 0.999773 |
 | C-RADIOv4-H MLX vs PyTorch/MPS | 0.999858 | 0.999494 |
+
+### Bundle Size
+
+| Model | bf16 bundle | 8-bit affine bundle | mxfp8 bundle |
+| --- | ---: | ---: | ---: |
+| C-RADIOv4-SO400M | 1.6 GB | 517 MB | 479 MB |
+| C-RADIOv4-H | 2.4 GB | 758 MB | 702 MB |
 
 ## Bootstrap
 
@@ -193,7 +244,7 @@ Check local acceleration backends:
 cradio-mlx device-info
 ```
 
-Create a manifest-only bundle scaffold from a local Hugging Face checkpoint directory:
+Create a self-contained bundle from a local Hugging Face checkpoint directory:
 
 ```sh
 cradio-mlx convert \
@@ -201,8 +252,49 @@ cradio-mlx convert \
   --mlx-path bundles/c-radiov4-h-bf16 \
   --model-id nvidia/C-RADIOv4-H \
   --revision 0057b339059c0b9e1b4ba996f975410ebbfdfcc8 \
-  --dtype bfloat16 \
-  --manifest-only
+  --dtype bfloat16
+```
+
+Quantize a bundle with 8-bit affine MLX packing:
+
+```sh
+cradio-mlx quantize \
+  --model bundles/c-radiov4-h-bf16 \
+  --out bundles/c-radiov4-h-8bit \
+  --bits 8 \
+  --group-size 64 \
+  --mode affine
+```
+
+Build an experimental `mxfp8` bundle:
+
+```sh
+cradio-mlx quantize \
+  --model bundles/c-radiov4-h-bf16 \
+  --out bundles/c-radiov4-h-mxfp8 \
+  --bits 8 \
+  --group-size 32 \
+  --mode mxfp8
+```
+
+Run the fast-kernel compiled benchmark matrix:
+
+```sh
+python scripts/benchmark_matrix.py \
+  --images reports/local_waldo_crops/*.jpg \
+  --image-sizes 256 512 768 \
+  --batch-sizes 1 2 4 \
+  --warmups 2 \
+  --repeats 5 \
+  --no-materialize \
+  --compile \
+  --summary reports/benchmark-matrix-fast-compiled.json
+```
+
+Run local parity tests. These skip automatically if the local checkpoints are absent:
+
+```sh
+python -m pytest tests/test_local_parity.py -q
 ```
 
 Compare embedding outputs:
@@ -243,4 +335,4 @@ The package stays embedding-first:
 - spatial grid reshape: `(B, D, H, W)`
 - supported image sizes: 256 to 2048, multiples of 16
 - first production tier: `bfloat16`
-- next production target: 8-bit affine quantization
+- supported quantized tier: 8-bit affine, with precision gates before use

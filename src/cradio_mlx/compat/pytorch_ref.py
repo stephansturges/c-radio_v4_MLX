@@ -18,10 +18,12 @@ TORCH_DTYPES = {
 @dataclass(frozen=True)
 class PyTorchReferenceConfig:
     model_id: str
+    model_config_id: str | None = None
     revision: str | None = None
     dtype: str = "bfloat16"
     device: str = "auto"
     trust_remote_code: bool = True
+    local_files_only: bool = False
 
 
 class PyTorchReferenceRunner:
@@ -39,7 +41,32 @@ class PyTorchReferenceRunner:
         dtype: str = "bfloat16",
         device: str = "auto",
     ) -> PyTorchReferenceRunner:
-        return cls(PyTorchReferenceConfig(model_id, revision, dtype, device))
+        return cls(
+            PyTorchReferenceConfig(
+                model_id=model_id,
+                revision=revision,
+                dtype=dtype,
+                device=device,
+            )
+        )
+
+    @classmethod
+    def from_local_checkpoint(
+        cls,
+        checkpoint_path: str | Path,
+        model_id: str,
+        dtype: str = "bfloat16",
+        device: str = "auto",
+    ) -> PyTorchReferenceRunner:
+        return cls(
+            PyTorchReferenceConfig(
+                model_id=str(checkpoint_path),
+                model_config_id=model_id,
+                dtype=dtype,
+                device=device,
+                local_files_only=True,
+            )
+        )
 
     def load(self) -> PyTorchReferenceRunner:
         try:
@@ -51,15 +78,21 @@ class PyTorchReferenceRunner:
 
         device = self._resolve_device(torch)
         torch_dtype = self._resolve_dtype(torch)
-        kwargs = {"revision": self.config.revision} if self.config.revision else {}
+        kwargs = {"local_files_only": self.config.local_files_only}
+        if self.config.revision:
+            kwargs["revision"] = self.config.revision
 
         self._processor = CLIPImageProcessor.from_pretrained(self.config.model_id, **kwargs)
-        self._model = AutoModel.from_pretrained(
-            self.config.model_id,
-            trust_remote_code=self.config.trust_remote_code,
-            dtype=torch_dtype,
-            **kwargs,
-        )
+        local_path = Path(self.config.model_id)
+        if self.config.local_files_only and local_path.exists():
+            self._model = self._load_local_model(local_path, torch_dtype)
+        else:
+            self._model = AutoModel.from_pretrained(
+                self.config.model_id,
+                trust_remote_code=self.config.trust_remote_code,
+                dtype=torch_dtype,
+                **kwargs,
+            )
         self._model = self._model.eval().to(device)
         self._device = device
         return self
@@ -83,7 +116,7 @@ class PyTorchReferenceRunner:
         else:
             height, width = image_size
 
-        model_cfg = get_model_config(self.config.model_id)
+        model_cfg = get_model_config(self.config.model_config_id or self.config.model_id)
         grid_h, grid_w = model_cfg.grid_shape((height, width))
         batch_images = images if isinstance(images, list) else [images]
         pil_images = [load_rgb_image(image) for image in batch_images]
@@ -112,7 +145,8 @@ class PyTorchReferenceRunner:
                 "backend": "pytorch",
                 "device": str(self._device),
                 "accelerated": str(self._device) != "cpu",
-                "model_id": self.config.model_id,
+                "model_id": self.config.model_config_id or self.config.model_id,
+                "checkpoint": self.config.model_id,
                 "revision": self.config.revision,
                 "dtype": self.config.dtype,
             },
@@ -135,3 +169,33 @@ class PyTorchReferenceRunner:
             known = ", ".join(sorted(TORCH_DTYPES))
             msg = f"unsupported torch dtype={self.config.dtype!r}; known: {known}"
             raise ValueError(msg) from exc
+
+    def _load_local_model(self, checkpoint_path: Path, torch_dtype: Any) -> Any:
+        import hashlib
+        import importlib.util
+        import sys
+        import types
+
+        package = f"_cradio_local_{hashlib.sha1(str(checkpoint_path).encode()).hexdigest()[:12]}"
+        if package not in sys.modules:
+            module = types.ModuleType(package)
+            module.__file__ = str(checkpoint_path / "__init__.py")
+            module.__path__ = [str(checkpoint_path)]
+            sys.modules[package] = module
+
+        module_name = f"{package}.hf_model"
+        if module_name not in sys.modules:
+            hf_model_path = checkpoint_path / "hf_model.py"
+            spec = importlib.util.spec_from_file_location(module_name, hf_model_path)
+            if spec is None or spec.loader is None:
+                raise RuntimeError(f"could not import local RADIO model from {hf_model_path}")
+            module = importlib.util.module_from_spec(spec)
+            sys.modules[module_name] = module
+            spec.loader.exec_module(module)
+
+        model_cls = sys.modules[module_name].RADIOModel
+        return model_cls.from_pretrained(
+            checkpoint_path,
+            dtype=torch_dtype,
+            local_files_only=True,
+        )

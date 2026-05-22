@@ -141,11 +141,15 @@ def build_parser() -> argparse.ArgumentParser:
         "--revision",
         default=None,
     )
-    mlx_bench.add_argument("--image", required=True, type=Path)
+    mlx_bench.add_argument("--image", required=True, type=Path, nargs="+")
     mlx_bench.add_argument("--image-size", nargs="+", type=int, default=[512])
+    mlx_bench.add_argument("--image-sizes", nargs="+", type=int)
+    mlx_bench.add_argument("--batch-size", nargs="+", type=int, default=[1])
     mlx_bench.add_argument("--dtype", default="bfloat16")
     mlx_bench.add_argument("--warmups", type=int, default=1)
     mlx_bench.add_argument("--repeats", type=int, default=3)
+    mlx_bench.add_argument("--no-materialize", action="store_true")
+    mlx_bench.add_argument("--compile", action="store_true")
     mlx_bench.add_argument("--report", required=True, type=Path)
 
     return parser
@@ -314,16 +318,21 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     if args.command == "mlx-benchmark":
+        image_size = args.image_sizes if args.image_sizes else _image_size(args.image_size)
+        image = args.image[0] if len(args.image) == 1 else args.image
         path = write_mlx_so400m_benchmark(
             MLXSO400MBenchmarkRequest(
                 checkpoint=args.checkpoint,
                 revision=args.revision,
                 variant=args.variant,
-                image=args.image,
-                image_size=_image_size(args.image_size),
+                image=image,
+                image_size=image_size,
                 dtype=args.dtype,
+                batch_size=args.batch_size,
                 warmups=args.warmups,
                 repeats=args.repeats,
+                materialize_outputs=not args.no_materialize,
+                compile_forward=args.compile,
                 report=args.report,
             )
         )

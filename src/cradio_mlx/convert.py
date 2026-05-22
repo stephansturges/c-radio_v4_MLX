@@ -59,6 +59,16 @@ def convert_checkpoint(request: ConversionRequest) -> Path:
     model_cfg = get_model_config(request.model_id)
     request.mlx_path.mkdir(parents=True, exist_ok=True)
     source_files = copy_metadata_files(request.hf_path, request.mlx_path)
+    conversion_state = "manifest_only"
+
+    if not request.manifest_only:
+        source_weights = request.hf_path / "model.safetensors"
+        if not source_weights.exists():
+            raise FileNotFoundError(source_weights)
+        target_weights = request.mlx_path / "model.safetensors"
+        shutil.copy2(source_weights, target_weights)
+        source_files["model.safetensors"] = sha256_file(target_weights)
+        conversion_state = "self_contained"
 
     manifest = BundleManifest(
         model_id=request.model_id,
@@ -69,18 +79,11 @@ def convert_checkpoint(request: ConversionRequest) -> Path:
         preferred_resolution=model_cfg.preferred_resolution,
         max_resolution=model_cfg.max_resolution,
         source_files=source_files,
+        license="nvidia-open-model-license",
         extra={
-            "conversion_state": "manifest_only" if request.manifest_only else "pending_weights",
+            "conversion_state": conversion_state,
             "source_hf_path": str(request.hf_path),
+            "weights_file": "model.safetensors" if not request.manifest_only else None,
         },
     )
-    manifest_path = manifest.save(request.mlx_path)
-
-    if not request.manifest_only:
-        raise NotImplementedError(
-            "Weight conversion is not implemented yet. Re-run with --manifest-only to create "
-            "the bundle metadata scaffold, then implement the SO400M MLX architecture and "
-            "HF-to-MLX key mapping."
-        )
-
-    return manifest_path
+    return manifest.save(request.mlx_path)

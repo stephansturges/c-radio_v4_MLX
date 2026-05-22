@@ -77,8 +77,7 @@ Acceptance:
 - summary cosine similarity is at least `0.999` against PyTorch reference
 - spatial cosine similarity is at least `0.995` against PyTorch reference
 
-Status: initial checkpoint complete for direct checkpoint loading. Bundle packaging remains in
-Milestone 5.
+Status: complete for direct checkpoint loading and self-contained bundle loading.
 
 ### 4. H Model Support
 
@@ -137,8 +136,9 @@ Acceptance:
 
 ## Immediate Work Queue
 
-1. Wrap the working SO400M MLX checkpoint loader in the bundle converter.
-2. Add H model config and weight-map support.
-3. Add MLX benchmark matrix reports for 256/512/1024 and fp32/bf16.
-4. Add quantized 8-bit affine weights behind the parity gate.
-5. Promote parity checks into automated tests gated on a local checkpoint fixture.
+1. Add calibrated quantization experiments if a deployment requires smaller-than-affine
+   bundles.
+2. Investigate custom Metal kernels only if fixed-contract 512px latency needs to improve
+   beyond the fused MLX fast-kernel path.
+3. Add CI artifact publishing for benchmark JSON summaries.
+4. Add optional Hugging Face upload tooling for self-contained bundles.

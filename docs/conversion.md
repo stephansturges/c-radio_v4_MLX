@@ -1,8 +1,9 @@
 # Conversion
 
-The first conversion checkpoint is intentionally manifest-only. It validates the local
-checkpoint directory, records provenance, copies available config/processor metadata, and
-creates the target bundle layout.
+The converter writes self-contained local MLX bundles from Hugging Face checkpoint
+directories. It validates the source checkpoint, records provenance, copies available
+config/processor metadata, copies `model.safetensors`, hashes bundle files, and writes a
+manifest with model ID, revision, dtype, variant, and NVIDIA model-license provenance.
 
 The next checkpoint is the SO400M `bfloat16` weight-map audit:
 
@@ -26,9 +27,8 @@ Current H implementation status:
 - native MLX H bf16 forward works at 512
 - 512px bf16 parity against PyTorch/MPS: summary cosine above `0.999`, spatial cosine above `0.999`
 
-The remaining conversion work is to wrap these local checkpoint loaders in a proper
-self-contained bundle writer instead of loading directly from Hugging Face checkpoint
-directories.
+The native MLX loaders can run from either the original checkpoint directories or the
+self-contained bundle directories.
 
 Start the audit with:
 

@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any
 
 import mlx.core as mx
+import mlx.core.fast as mx_fast
 
 from cradio_mlx.imaging import load_rgb_image, resize_image
 from cradio_mlx.outputs import EmbeddingResult
@@ -78,6 +79,12 @@ VARIANT_SPECS = {
     "so400m": SO400M_SPEC,
     "h": H_SPEC,
 }
+QUANTIZATION_CODE_MODES = {
+    0: "affine",
+    1: "mxfp4",
+    2: "mxfp8",
+    3: "nvfp4",
+}
 
 
 @dataclass(frozen=True)
@@ -101,6 +108,7 @@ class MLXRadioEncoder:
         self.config = config
         self.spec = spec
         self.dtype = _mlx_dtype(config.dtype)
+        self._pos_cache: dict[tuple[int, int], mx.array] = {}
 
     @classmethod
     def load(
@@ -133,7 +141,7 @@ class MLXRadioEncoder:
         with safe_open(model_path, framework="numpy") as handle:
             for key in handle.keys():
                 array = mx.array(handle.get_tensor(key))
-                if key != "radio_model.summary_idxs" and "input_conditioner" not in key:
+                if _should_cast_loaded_weight(key):
                     array = array.astype(target_dtype)
                 weights[key] = array
         mx.eval(list(weights.values()))
@@ -178,6 +186,39 @@ class MLXRadioEncoder:
             },
         )
 
+    def encode_batch(
+        self,
+        images: list[str | Path | Any],
+        image_size: int | tuple[int, int] = 512,
+    ) -> EmbeddingResult:
+        pixel_values = _load_rescaled_images(images, image_size)
+        summary, spatial = self.forward(pixel_values)
+        mx.eval(summary, spatial)
+
+        if isinstance(image_size, int):
+            height = width = image_size
+        else:
+            height, width = image_size
+
+        return EmbeddingResult(
+            summary=_to_numpy(summary),
+            spatial=_to_numpy(spatial),
+            grid_h=height // self.spec.patch_size,
+            grid_w=width // self.spec.patch_size,
+            patch_size=self.spec.patch_size,
+            image_size=(height, width),
+            metadata={
+                "backend": "mlx",
+                "device": str(mx.default_device()),
+                "accelerated": "gpu" in str(mx.default_device()).lower(),
+                "model_id": self.config.model_id,
+                "revision": self.config.revision,
+                "dtype": self.config.dtype,
+                "variant": self.config.variant,
+                "batch_size": len(images),
+            },
+        )
+
     def forward(self, pixel_values: mx.array) -> tuple[mx.array, mx.array]:
         x = pixel_values.astype(self.dtype)
         mean = self.weights["radio_model.input_conditioner.norm_mean"].astype(self.dtype)
@@ -198,7 +239,8 @@ class MLXRadioEncoder:
         patches = _im2patches(x, self.spec.patch_size)
         patches = _linear(
             patches,
-            self.weights["radio_model.model.patch_generator.embedder.weight"],
+            self.weights,
+            "radio_model.model.patch_generator.embedder",
         )
 
         _, _, height, width = x.shape
@@ -213,8 +255,14 @@ class MLXRadioEncoder:
         return mx.concatenate([token, patches], axis=1)
 
     def _pos_embed(self, grid_h: int, grid_w: int) -> mx.array:
+        cache_key = (grid_h, grid_w)
+        cached = self._pos_cache.get(cache_key)
+        if cached is not None:
+            return cached
+
         pos = self.weights["radio_model.model.patch_generator.pos_embed"]
         if grid_h == self.spec.max_grid and grid_w == self.spec.max_grid:
+            self._pos_cache[cache_key] = pos
             return pos
 
         pos_np = _to_numpy(pos).reshape(
@@ -225,7 +273,10 @@ class MLXRadioEncoder:
         )
         resized = _resize_pos_embed_align_corners_false(pos_np, grid_h, grid_w)
         resized = resized.reshape(1, grid_h * grid_w, self.spec.embed_dim)
-        return mx.array(resized).astype(self.dtype)
+        out = mx.array(resized).astype(self.dtype)
+        mx.eval(out)
+        self._pos_cache[cache_key] = out
+        return out
 
     def _block(self, x: mx.array, index: int) -> mx.array:
         prefix = f"radio_model.model.blocks.{index}"
@@ -247,35 +298,38 @@ class MLXRadioEncoder:
         batch, tokens, _ = x.shape
         qkv = _linear(
             x,
-            self.weights[f"{prefix}.attn.qkv.weight"],
-            self.weights[f"{prefix}.attn.qkv.bias"],
+            self.weights,
+            f"{prefix}.attn.qkv",
         )
         qkv = mx.reshape(qkv, (batch, tokens, 3, self.spec.num_heads, self.spec.head_dim))
         q = mx.transpose(qkv[:, :, 0, :, :], (0, 2, 1, 3))
         k = mx.transpose(qkv[:, :, 1, :, :], (0, 2, 1, 3))
         v = mx.transpose(qkv[:, :, 2, :, :], (0, 2, 1, 3))
 
-        attn = (q @ mx.transpose(k, (0, 1, 3, 2))) * (self.spec.head_dim**-0.5)
-        attn = mx.softmax(attn, axis=-1)
-        x = attn @ v
+        x = mx_fast.scaled_dot_product_attention(
+            q,
+            k,
+            v,
+            scale=self.spec.head_dim**-0.5,
+        )
         x = mx.reshape(mx.transpose(x, (0, 2, 1, 3)), (batch, tokens, self.spec.embed_dim))
         return _linear(
             x,
-            self.weights[f"{prefix}.attn.proj.weight"],
-            self.weights[f"{prefix}.attn.proj.bias"],
+            self.weights,
+            f"{prefix}.attn.proj",
         )
 
     def _mlp(self, x: mx.array, prefix: str) -> mx.array:
         x = _linear(
             x,
-            self.weights[f"{prefix}.mlp.fc1.weight"],
-            self.weights[f"{prefix}.mlp.fc1.bias"],
+            self.weights,
+            f"{prefix}.mlp.fc1",
         )
         x = _gelu_exact(x)
         return _linear(
             x,
-            self.weights[f"{prefix}.mlp.fc2.weight"],
-            self.weights[f"{prefix}.mlp.fc2.bias"],
+            self.weights,
+            f"{prefix}.mlp.fc2",
         )
 
 
@@ -317,19 +371,49 @@ class MLXHEncoder(MLXRadioEncoder):
         return cls(encoder.weights, encoder.config, encoder.spec)
 
 
-def _linear(x: mx.array, weight: mx.array, bias: mx.array | None = None) -> mx.array:
-    y = x @ mx.transpose(weight)
+def _linear(x: mx.array, weights: dict[str, mx.array], prefix: str) -> mx.array:
+    qweight = weights.get(f"{prefix}.qweight")
+    if qweight is not None:
+        group_size = int(_scalar_item(weights[f"{prefix}.qgroup_size"]))
+        padded_meta = weights.get(f"{prefix}.qpadded_in_features")
+        padded_in_features = (
+            int(_scalar_item(padded_meta))
+            if padded_meta is not None
+            else int(weights[f"{prefix}.qscales"].shape[-1]) * group_size
+        )
+        mode_code = weights.get(f"{prefix}.qmode_code")
+        mode = (
+            QUANTIZATION_CODE_MODES[int(_scalar_item(mode_code))]
+            if mode_code is not None
+            else "affine"
+        )
+        if x.shape[-1] < padded_in_features:
+            pad_width = padded_in_features - x.shape[-1]
+            padding = mx.zeros((*x.shape[:-1], pad_width), dtype=x.dtype)
+            x = mx.concatenate([x, padding], axis=-1)
+        y = mx.quantized_matmul(
+            x,
+            qweight,
+            weights[f"{prefix}.qscales"],
+            weights.get(f"{prefix}.qbiases"),
+            group_size=group_size,
+            bits=int(_scalar_item(weights[f"{prefix}.qbits"])),
+            mode=mode,
+        )
+        bias = weights.get(f"{prefix}.bias")
+        if bias is not None:
+            y = y + bias
+        return y
+
+    weight = weights[f"{prefix}.weight"]
+    bias = weights.get(f"{prefix}.bias")
     if bias is not None:
-        y = y + bias
-    return y
+        return mx.addmm(bias, x, mx.transpose(weight))
+    return x @ mx.transpose(weight)
 
 
 def _layer_norm(x: mx.array, weight: mx.array, bias: mx.array, eps: float = 1e-6) -> mx.array:
-    weight = weight.astype(x.dtype)
-    bias = bias.astype(x.dtype)
-    mean = mx.mean(x, axis=-1, keepdims=True)
-    variance = mx.mean(mx.square(x - mean), axis=-1, keepdims=True)
-    return ((x - mean) * mx.rsqrt(variance + eps)) * weight + bias
+    return mx_fast.layer_norm(x, weight.astype(x.dtype), bias.astype(x.dtype), eps)
 
 
 def _gelu_exact(x: mx.array) -> mx.array:
@@ -346,12 +430,21 @@ def _im2patches(x: mx.array, patch_size: int) -> mx.array:
 
 
 def _load_rescaled_image(image: str | Path | Any, image_size: int | tuple[int, int]) -> mx.array:
+    return _load_rescaled_images([image], image_size)
+
+
+def _load_rescaled_images(
+    images: list[str | Path | Any],
+    image_size: int | tuple[int, int],
+) -> mx.array:
     import numpy as np
 
-    pil_image = resize_image(load_rgb_image(image), image_size)
-    arr = np.asarray(pil_image).astype("float32") / 255.0
-    chw = arr.transpose(2, 0, 1)
-    return mx.array(chw[None, ...])
+    arrays = []
+    for image in images:
+        pil_image = resize_image(load_rgb_image(image), image_size)
+        arr = np.asarray(pil_image).astype("float32") / 255.0
+        arrays.append(arr.transpose(2, 0, 1))
+    return mx.array(np.stack(arrays, axis=0))
 
 
 def _resize_pos_embed_align_corners_false(pos: Any, out_h: int, out_w: int) -> Any:
@@ -396,3 +489,25 @@ def _to_numpy(array: mx.array) -> Any:
     import numpy as np
 
     return np.asarray(array.astype(mx.float32))
+
+
+def _should_cast_loaded_weight(key: str) -> bool:
+    if key == "radio_model.summary_idxs" or "input_conditioner" in key:
+        return False
+    quantized_suffixes = (
+        ".qweight",
+        ".qscales",
+        ".qbiases",
+        ".qbits",
+        ".qgroup_size",
+        ".qmode_code",
+        ".qin_features",
+        ".qpadded_in_features",
+    )
+    if key.endswith(quantized_suffixes):
+        return False
+    return True
+
+
+def _scalar_item(value: mx.array) -> int | float:
+    return value.item() if hasattr(value, "item") else value

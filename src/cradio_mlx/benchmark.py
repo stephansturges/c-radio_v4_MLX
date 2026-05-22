@@ -33,14 +33,17 @@ class PyTorchBenchmarkRequest:
 @dataclass(frozen=True)
 class MLXSO400MBenchmarkRequest:
     checkpoint: Path
-    image: Path
+    image: Path | list[Path]
     report: Path
     revision: str | None = None
     variant: str = "so400m"
-    image_size: int | tuple[int, int] = 512
+    image_size: int | tuple[int, int] | list[int | tuple[int, int]] = 512
     dtype: str = "bfloat16"
+    batch_size: int | list[int] = 1
     warmups: int = 1
     repeats: int = 3
+    materialize_outputs: bool = True
+    compile_forward: bool = False
 
 
 def write_benchmark_stub(request: BenchmarkRequest) -> Path:
@@ -128,7 +131,14 @@ def write_pytorch_benchmark(request: PyTorchBenchmarkRequest) -> Path:
 
 
 def write_mlx_so400m_benchmark(request: MLXSO400MBenchmarkRequest) -> Path:
-    from cradio_mlx.mlx_so400m import MLXHEncoder, MLXSO400MEncoder
+    import mlx.core as mx
+
+    from cradio_mlx.mlx_so400m import (
+        MLXHEncoder,
+        MLXSO400MEncoder,
+        _load_rescaled_images,
+        _to_numpy,
+    )
 
     load_start = perf_counter()
     encoder_cls = MLXHEncoder if request.variant == "h" else MLXSO400MEncoder
@@ -137,47 +147,89 @@ def write_mlx_so400m_benchmark(request: MLXSO400MBenchmarkRequest) -> Path:
         dtype=request.dtype,
         revision=request.revision,
     )
+    forward = mx.compile(encoder.forward) if request.compile_forward else encoder.forward
     load_seconds = perf_counter() - load_start
 
-    for _ in range(request.warmups):
-        encoder.encode_image(request.image, image_size=request.image_size)
+    image_paths = _as_path_list(request.image)
+    image_sizes = _as_list(request.image_size)
+    batch_sizes = _as_list(request.batch_size)
 
-    latencies: list[float] = []
-    result = None
-    for _ in range(request.repeats):
-        start = perf_counter()
-        result = encoder.encode_image(request.image, image_size=request.image_size)
-        latencies.append(perf_counter() - start)
-
-    if result is None:
+    if request.repeats < 1:
         raise ValueError("repeats must be at least 1")
 
-    sorted_latencies = sorted(latencies)
-    p50 = sorted_latencies[len(sorted_latencies) // 2]
-    p95 = sorted_latencies[min(len(sorted_latencies) - 1, int(len(sorted_latencies) * 0.95))]
+    rows: list[dict[str, Any]] = []
+    for image_size in image_sizes:
+        for batch_size in batch_sizes:
+            batch_images = _cycle_to_batch(image_paths, int(batch_size))
+            pixel_values = _load_rescaled_images(batch_images, image_size)
+            mx.eval(pixel_values)
+
+            for _ in range(request.warmups):
+                summary, spatial = forward(pixel_values)
+                mx.eval(summary, spatial)
+                if request.materialize_outputs:
+                    _to_numpy(summary)
+                    _to_numpy(spatial)
+
+            latencies: list[float] = []
+            summary = spatial = None
+            for _ in range(request.repeats):
+                start = perf_counter()
+                summary, spatial = forward(pixel_values)
+                mx.eval(summary, spatial)
+                if request.materialize_outputs:
+                    _to_numpy(summary)
+                    _to_numpy(spatial)
+                latencies.append(perf_counter() - start)
+
+            if summary is None or spatial is None:
+                raise ValueError("repeats must be at least 1")
+
+            sorted_latencies = sorted(latencies)
+            p50 = sorted_latencies[len(sorted_latencies) // 2]
+            p95 = sorted_latencies[
+                min(len(sorted_latencies) - 1, int(len(sorted_latencies) * 0.95))
+            ]
+            if isinstance(image_size, int):
+                height = width = image_size
+            else:
+                height, width = image_size
+            grid_h = height // encoder.spec.patch_size
+            grid_w = width // encoder.spec.patch_size
+            rows.append(
+                {
+                    "image_size": (height, width),
+                    "batch_size": int(batch_size),
+                    "grid_h": grid_h,
+                    "grid_w": grid_w,
+                    "summary_shape": tuple(summary.shape),
+                    "spatial_shape": tuple(spatial.shape),
+                    "warmups": request.warmups,
+                    "repeats": request.repeats,
+                    "latencies_seconds": latencies,
+                    "latency_p50_seconds": p50,
+                    "latency_p95_seconds": p95,
+                    "images_per_second_p50": int(batch_size) / p50,
+                }
+            )
 
     payload: dict[str, Any] = {
         "benchmark_state": "complete",
         "backend": "mlx",
-        "accelerated": result.metadata["accelerated"],
-        "device": result.metadata["device"],
-        "model_id": result.metadata["model_id"],
-        "revision": result.metadata["revision"],
-        "variant": result.metadata["variant"],
+        "accelerated": "gpu" in str(mx.default_device()).lower(),
+        "device": str(mx.default_device()),
+        "model_id": encoder.config.model_id,
+        "revision": encoder.config.revision,
+        "variant": encoder.config.variant,
         "dtype": request.dtype,
-        "image": str(request.image),
-        "image_size": result.image_size,
-        "grid_h": result.grid_h,
-        "grid_w": result.grid_w,
-        "summary_shape": tuple(result.summary.shape),
-        "spatial_shape": tuple(result.spatial.shape),
         "load_seconds": load_seconds,
-        "warmups": request.warmups,
-        "repeats": request.repeats,
-        "latencies_seconds": latencies,
-        "latency_p50_seconds": p50,
-        "latency_p95_seconds": p95,
+        "images": [str(path) for path in image_paths],
+        "materialize_outputs": request.materialize_outputs,
+        "compile_forward": request.compile_forward,
+        "rows": rows,
     }
+    if len(rows) == 1:
+        payload.update(rows[0])
     request.report.parent.mkdir(parents=True, exist_ok=True)
     with request.report.open("w", encoding="utf-8") as handle:
         json.dump(payload, handle, indent=2, sort_keys=True)
@@ -195,3 +247,23 @@ def _synchronize_torch() -> None:
             torch.cuda.synchronize()
     except Exception:
         pass
+
+
+def _as_path_list(value: Path | list[Path]) -> list[Path]:
+    if isinstance(value, list):
+        return value
+    return [value]
+
+
+def _as_list(value: Any) -> list[Any]:
+    if isinstance(value, list):
+        return value
+    return [value]
+
+
+def _cycle_to_batch(paths: list[Path], batch_size: int) -> list[Path]:
+    if batch_size <= 0:
+        raise ValueError("batch_size must be positive")
+    if not paths:
+        raise ValueError("at least one image is required")
+    return [paths[index % len(paths)] for index in range(batch_size)]
