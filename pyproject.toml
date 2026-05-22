@@ -33,6 +33,9 @@ dev = [
 cider = [
   "cider @ git+https://github.com/Mininglamp-AI/cider.git ; python_version >= '3.12'",
 ]
+coreml = [
+  "coremltools",
+]
 
 [project.scripts]
 cradio-mlx = "cradio_mlx.cli:main"

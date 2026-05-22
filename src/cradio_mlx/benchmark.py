@@ -45,6 +45,7 @@ class MLXSO400MBenchmarkRequest:
     materialize_outputs: bool = True
     compile_forward: bool = False
     cider_fusion: str = "off"
+    cider_fusion_targets: str = "ln"
 
 
 def write_benchmark_stub(request: BenchmarkRequest) -> Path:
@@ -148,6 +149,7 @@ def write_mlx_so400m_benchmark(request: MLXSO400MBenchmarkRequest) -> Path:
         dtype=request.dtype,
         revision=request.revision,
         cider_fusion=request.cider_fusion,
+        cider_fusion_targets=request.cider_fusion_targets,
     )
     forward = mx.compile(encoder.forward) if request.compile_forward else encoder.forward
     load_seconds = perf_counter() - load_start
@@ -229,6 +231,7 @@ def write_mlx_so400m_benchmark(request: MLXSO400MBenchmarkRequest) -> Path:
         "materialize_outputs": request.materialize_outputs,
         "compile_forward": request.compile_forward,
         "cider_fusion": request.cider_fusion,
+        "cider_fusion_targets": request.cider_fusion_targets,
         "rows": rows,
     }
     if len(rows) == 1:

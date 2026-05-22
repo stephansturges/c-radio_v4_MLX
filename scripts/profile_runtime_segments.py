@@ -27,6 +27,7 @@ def main() -> int:
     parser.add_argument("--warmups", type=int, default=2)
     parser.add_argument("--repeats", type=int, default=5)
     parser.add_argument("--cider-fusion", choices=["off", "auto", "required"], default="off")
+    parser.add_argument("--cider-fusion-targets", choices=["ln", "mlp", "ln+mlp"], default="ln")
     parser.add_argument("--out", required=True, type=Path)
     args = parser.parse_args()
 
@@ -45,6 +46,7 @@ def main() -> int:
         warmups=args.warmups,
         repeats=args.repeats,
         cider_fusion=args.cider_fusion,
+        cider_fusion_targets=args.cider_fusion_targets,
     )
     args.out.parent.mkdir(parents=True, exist_ok=True)
     args.out.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
@@ -62,9 +64,15 @@ def profile_segments(
     warmups: int,
     repeats: int,
     cider_fusion: str,
+    cider_fusion_targets: str,
 ) -> dict[str, Any]:
     encoder_cls = MLXHEncoder if variant == "h" else MLXSO400MEncoder
-    encoder = encoder_cls.load(checkpoint, dtype=dtype, cider_fusion=cider_fusion)
+    encoder = encoder_cls.load(
+        checkpoint,
+        dtype=dtype,
+        cider_fusion=cider_fusion,
+        cider_fusion_targets=cider_fusion_targets,
+    )
     batch_images = _cycle_to_batch(images, batch_size)
     pixel_values = runtime._load_rescaled_images(batch_images, image_size)
     mx.eval(pixel_values)
@@ -140,6 +148,7 @@ def profile_segments(
         "warmups": warmups,
         "repeats": repeats,
         "cider_fusion": cider_fusion,
+        "cider_fusion_targets": cider_fusion_targets,
         "end_to_end": _summarize(end_to_end),
         "segments": {name: _summarize(values) for name, values in sorted(stats.items())},
     }

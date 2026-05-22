@@ -83,16 +83,18 @@ Local benchmark environment:
 
 | Model | Artifact | p50 latency | Throughput | Notes |
 | --- | --- | ---: | ---: | --- |
-| C-RADIOv4-SO400M | bf16 | 32.7 ms | 30.6 images/s | fastest 512px SO400M tier measured |
+| C-RADIOv4-SO400M | bf16 | 32.7 ms | 30.6 images/s | dense MLX baseline |
 | C-RADIOv4-SO400M | HF `so400m/8bit-affine` | 49.6 ms | 20.2 images/s | packed MLX weight-only runtime; high precision |
 | C-RADIOv4-SO400M | HF `so400m/cider-w8a8` | 32.5 ms | 30.8 images/s | real W8A8 runtime; smaller, roughly matches bf16 here |
 | C-RADIOv4-SO400M | HF `so400m/cider-w8a8-g128` | 31.3 ms | 32.0 images/s | balanced Cider W8A8 |
-| C-RADIOv4-SO400M | HF `so400m/cider-w8a8-p9999` | 29.8 ms | 33.5 images/s | fastest Cider W8A8; more drift |
+| C-RADIOv4-SO400M | HF `so400m/cider-w8a8-p9999` + `ln+mlp` | 28.5 ms | 35.1 images/s | fastest Cider W8A8; experimental patch |
+| C-RADIOv4-SO400M | Core ML fixed-shape | 25.1 ms | 39.8 images/s | proof only; missed 20% gate vs fused Cider |
 | C-RADIOv4-H | bf16 | 53.7 ms | 18.6 images/s | strong baseline |
 | C-RADIOv4-H | HF `h/8bit-affine` | 74.2 ms | 13.5 images/s | packed MLX weight-only runtime; high precision |
 | C-RADIOv4-H | HF `h/cider-w8a8` | 47.1 ms | 21.2 images/s | real W8A8 runtime; modestly faster than bf16 |
 | C-RADIOv4-H | HF `h/cider-w8a8-g128` | 48.3 ms | 20.7 images/s | balanced Cider W8A8 |
-| C-RADIOv4-H | HF `h/cider-w8a8-p9999` | 43.7 ms | 22.9 images/s | fastest Cider W8A8; more drift |
+| C-RADIOv4-H | HF `h/cider-w8a8-p9999` + `ln+mlp` | 42.7 ms | 23.4 images/s | fastest Cider W8A8; experimental patch |
+| C-RADIOv4-H | Core ML fixed-shape | 31.4 ms | 31.8 images/s | proof passed speed/precision gate |
 
 ### Best Matrix Throughput
 
@@ -101,11 +103,11 @@ Local benchmark environment:
 | C-RADIOv4-SO400M | bf16 | 256 | 4 | 27.6 ms | 144.9 images/s |
 | C-RADIOv4-SO400M | HF `so400m/8bit-affine` | 256 | 4 | 35.0 ms | 114.3 images/s |
 | C-RADIOv4-SO400M | HF `so400m/cider-w8a8` | 256 | 4 | 27.1 ms | 147.8 images/s |
-| C-RADIOv4-SO400M | HF `so400m/cider-w8a8-p9999` | 256 | 4 | 24.8 ms | 161.4 images/s |
+| C-RADIOv4-SO400M | HF `so400m/cider-w8a8-p9999` + `ln+mlp` | 256 | 4 | 23.5 ms | 170.1 images/s |
 | C-RADIOv4-H | bf16 | 256 | 4 | 42.0 ms | 95.2 images/s |
 | C-RADIOv4-H | HF `h/8bit-affine` | 256 | 4 | 59.0 ms | 67.8 images/s |
 | C-RADIOv4-H | HF `h/cider-w8a8` | 256 | 4 | 37.4 ms | 106.9 images/s |
-| C-RADIOv4-H | HF `h/cider-w8a8-p9999` | 256 | 4 | 33.8 ms | 118.3 images/s |
+| C-RADIOv4-H | HF `h/cider-w8a8-p9999` + `ln+mlp` | 256 | 4 | 32.7 ms | 122.3 images/s |
 
 MLX `0.31.2` is installed and current. Its newer `mxfp8`/`nvfp4` path is available, and
 `quantize_input=True` is documented only for `mxfp8` and `nvfp4` linear layers. For this
@@ -133,16 +135,20 @@ streams the same large linear weights, and uses inference stacks built specifica
 low-bit decode. This repo follows the same rule: use low-bit models only where the
 Apple/MLX kernel layer actually consumes low-bit weights during inference.
 
-An experimental Cider patch is included at
-`cider_patches/0001-layernorm-w8a8-linear.patch`. It adds a native
-`layernorm -> W8A8 linear` Metal primitive for the p99.99 Cider bundles and is enabled
-with `--cider-fusion auto|required`. On SO400M p99.99, the patched path moved 512px
-batch-1 from 32.32 ms to 31.69 ms without compile, and from 29.65 ms to 29.17 ms with
-compile. H was effectively neutral. This is useful evidence, but not a new headline speed
-tier: it only fuses `norm1 -> attn.qkv` and `norm2 -> mlp.fc1`, while attention, GELU,
-second MLP projections, residual traffic, and image patching still remain outside the
-custom kernel. Smoke fused-vs-unfused cosine at 512px was 0.998747/0.998902 for SO400M
-summary/spatial and 0.998525/0.996893 for H, so it remains experimental.
+Experimental Cider patches are included under `cider_patches/`. They add native
+`layernorm -> W8A8 linear` and `GELU -> W8A8 fc2` Metal primitives for the p99.99 Cider
+bundles and are enabled with `--cider-fusion auto|required --cider-fusion-targets ln+mlp`.
+The MLP-stage patch passed the fast-kill gate: SO400M p99.99 `512x512` batch 1 moved from
+32.54 ms unfused to 28.47 ms with `ln+mlp`; H moved from 47.24 ms to 42.68 ms. Smoke
+fused-vs-unfused cosine at 512px stayed above 0.9987/0.9990 for SO400M summary/spatial and
+0.9986/0.9971 for H. This is the best low-level win found so far, but it is still not a
+10x path because attention, the GEMMs themselves, residual traffic, patching, and output
+materialization still dominate the full encoder.
+
+Core ML fixed-shape conversion was also tested. SO400M Core ML `ALL` reached 25.12 ms at
+512px batch 1 with excellent cosine but missed the planned 20% speed gate versus the fused
+Cider baseline. H Core ML `ALL` reached 31.42 ms and passed the gate. `ALL` and
+`CPU_AND_GPU` were effectively identical, so this is not evidence of an ANE-specific win.
 
 W4A8 was also tested. It cut bundle and active weight memory further, but it was slower
 end-to-end and failed precision gates, so it is not a supported artifact.
@@ -264,9 +270,10 @@ The first call pays MLX compilation overhead for that input shape; repeated call
 same resolution are the intended use.
 
 For Cider fusion experiments, use `--cider-fusion auto` to opt into a Cider fork that
-provides fused `layernorm -> W8A8 linear` ops while keeping the current path as fallback.
-Use `--cider-fusion required` in benchmark jobs when absence of the native fused op should
-fail fast.
+provides fused low-level ops while keeping the current path as fallback. Use
+`--cider-fusion-targets ln`, `mlp`, or `ln+mlp` to isolate targets, and
+`--cider-fusion required` in benchmark jobs when absence of native fused ops should fail
+fast.
 
 ## Download Checkpoints
 

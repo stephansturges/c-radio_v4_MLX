@@ -48,12 +48,20 @@ This document tracks the current speedup levers for the MLX C-RADIOv4 runtime.
    underlying `mx.qqmm` path raises `RuntimeError: [QQMatmul] NYI for the general case`
    on C-RADIOv4 token matrices. Revisit this when MLX implements the general case.
 
-10. Fused Cider LayerNorm + W8A8 linear works, but only moves the needle slightly.
-    The repo includes `cider_patches/0001-layernorm-w8a8-linear.patch`, which adds
-    `cider.ops.layernorm_perchannel_linear(...)`. On SO400M p99.99 it improved 512px
-    batch-1 from 32.32 ms to 31.69 ms without compile and from 29.65 ms to 29.17 ms with
-    compile. H was neutral. This confirms that custom Metal fusion helps, but also that
-    the unfused remainder of the transformer block is now the limiting cost.
+10. Fused Cider MLP-stage kernels are the best low-level win found so far.
+    The repo includes Cider patches for `layernorm -> W8A8 linear` and
+    `GELU -> W8A8 fc2`. LayerNorm fusion alone was small, but `GELU -> fc2` passed the
+    fast-kill gate. SO400M p99.99 `512x512` batch 1 moved from 32.54 ms unfused to
+    28.47 ms with `ln+mlp`; H moved from 47.24 ms to 42.68 ms. Batch-4 throughput improved
+    more, with SO400M `512x512` moving from 33.4 to 39.7 images/s.
+
+11. Core ML is worth keeping for H, not as an ANE proof.
+    Fixed-shape Core ML ML Program conversion works through `torch.export`, while
+    TorchScript conversion fails on PyTorch shape casts in the patch generator. At
+    `512x512` batch 1, SO400M Core ML `ALL` was 25.12 ms and missed the 20% speed gate
+    versus fused Cider. H Core ML `ALL` was 31.42 ms and passed the gate versus fused
+    Cider's 42.68 ms. `ALL` and `CPU_AND_GPU` were effectively identical, so there is no
+    evidence of a specific ANE win yet.
 
 ## Current Best Modes
 
@@ -62,7 +70,8 @@ This document tracks the current speedup levers for the MLX C-RADIOv4 runtime.
 | Highest precision and simple deployment | bf16 |
 | Compact high-precision weights | 8-bit affine |
 | Balanced low-bit runtime on Apple M5+ | Cider W8A8 g128 |
-| Fastest tested low-bit runtime on Apple M5+ | Cider W8A8 p99.99 |
+| Fastest tested low-bit runtime on Apple M5+ | Cider W8A8 p99.99 with `ln+mlp` fusion |
+| Fastest fixed-shape H proof | Core ML ML Program |
 | Lowest memory regardless of quality | Not supported; W4A8 failed precision |
 
 ## Remaining Work
@@ -75,12 +84,14 @@ This document tracks the current speedup levers for the MLX C-RADIOv4 runtime.
   efficiency, but the current local configs have `vitdet_window_size: null`. A correct MLX
   implementation would need a PyTorch reference run with ViTDet enabled and separate parity
   gates because it changes the attention pattern.
-- Broader fused custom Metal blocks. The first Cider fusion target,
-  `layernorm -> W8A8 linear`, is implemented as a patch and wired behind
-  `--cider-fusion auto|required`. The next plausible kernels are fc1-dequant + GELU +
-  fc2 activation quantization, or a larger MLP fusion. Those are materially harder because
-  they need to preserve precision across the expanded hidden dimension and interact with
-  Cider's existing GEMM kernels.
+- Broader fused custom Metal blocks. `layernorm -> W8A8 linear` and `GELU -> W8A8 fc2`
+  are implemented as Cider patches and wired behind `--cider-fusion auto|required` plus
+  `--cider-fusion-targets`. A larger two-GEMM MLP primitive is the next plausible custom
+  kernel, but it is materially harder because it needs to avoid the expanded hidden
+  activation write while preserving precision across both GEMMs.
+- Core ML H integration. The fixed-shape H proof passed its speed/precision gate, but it is
+  not yet a backend and does not show an ANE-specific advantage. A production path would
+  need shape management, preprocessing policy, package caching, and Tator integration.
 - Runtime integration with a crop queue. If Tator can batch independent crops, use benchmark
   data to choose a batch size per model/resolution rather than assuming one universal batch.
 

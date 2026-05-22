@@ -103,12 +103,13 @@ Why it is not a 10x speedup:
 Cider W4A8 was tested and rejected. It reduced bundle size further, but it was slower
 end-to-end and failed precision gates on the smoke image.
 
-## Fused LayerNorm + Linear Hook
+## Fused Cider Hooks
 
-The runtime has an experimental fused-op integration point for:
+The runtime has experimental fused-op integration points for:
 
 - `norm1 -> attn.qkv`
 - `norm2 -> mlp.fc1`
+- `gelu(mlp.fc1) -> mlp.fc2`
 
 Enable it with:
 
@@ -121,6 +122,7 @@ cradio-mlx mlx-benchmark \
   --batch-size 1 \
   --dtype bfloat16 \
   --cider-fusion auto \
+  --cider-fusion-targets ln+mlp \
   --report reports/experiments/fusion-auto.json
 ```
 
@@ -130,6 +132,12 @@ Modes:
 - `auto`: use fused Cider ops when installed, otherwise fall back to the current path.
 - `required`: fail if the installed Cider package does not provide the fused ops.
 
+Targets:
+
+- `ln`: fuse `norm1 -> attn.qkv` and `norm2 -> mlp.fc1`; this is the default.
+- `mlp`: fuse `GELU -> mlp.fc2` only.
+- `ln+mlp`: use both fused paths.
+
 Current upstream Cider `0.7.0` does not expose the fused functions. With
 `--cider-fusion required`, the runtime fails explicitly with:
 
@@ -138,55 +146,57 @@ Cider fusion is required, but cider.ops.layernorm_perchannel_linear is not avail
 ```
 
 This repo includes a tested Cider patch at
-`cider_patches/0001-layernorm-w8a8-linear.patch`, based on Cider commit
-`01b8f9c0e65a54375e50eab9480ca2ff6a1a0d6e`. The patch adds:
+`cider_patches/`, based on Cider commit `01b8f9c0e65a54375e50eab9480ca2ff6a1a0d6e`.
+The patches add:
 
 - `cider.ops.layernorm_perchannel_linear(...)`
+- `cider.ops.gelu_perchannel_linear(...)`
 
-The current p99.99 Cider bundles are per-channel W8A8, so this is enough for the tested
-SO400M/H fused path. A future per-group Cider bundle would also need
-`cider.ops.layernorm_pergroup_linear(...)`.
+The current p99.99 Cider bundles are per-channel W8A8, so these ops are enough for the
+tested SO400M/H fused path. A future per-group Cider bundle would also need per-group
+fused variants.
 
-Apply the patch in a Cider checkout, then reinstall Cider:
+Apply the patches in a Cider checkout, then reinstall Cider:
 
 ```sh
-git apply /path/to/c-radio_v4_MLX/cider_patches/0001-layernorm-w8a8-linear.patch
+git apply --3way /path/to/c-radio_v4_MLX/cider_patches/0001-layernorm-w8a8-linear.patch
+git apply /path/to/c-radio_v4_MLX/cider_patches/0002-gelu-w8a8-linear.patch
 python -m pip install -e .
 ```
 
-This hook is intentionally narrow: it only exercises the first native-kernel target without
-changing bundle format or removing the unfused fallback.
+These hooks do not change bundle format or remove the unfused fallback.
 
 Smoke precision of fused versus unfused Cider p99.99 at `512x512`:
 
-| Model | Summary cosine | Spatial cosine |
-| --- | ---: | ---: |
-| SO400M | 0.998747 | 0.998902 |
-| H | 0.998525 | 0.996893 |
+| Model | Target | Summary cosine | Spatial cosine |
+| --- | --- | ---: | ---: |
+| SO400M | `mlp` | 0.998928 | 0.999143 |
+| SO400M | `ln+mlp` | 0.998735 | 0.999090 |
+| H | `mlp` | 0.998615 | 0.997137 |
+| H | `ln+mlp` | 0.998612 | 0.997095 |
 
-The precision drift comes from doing the fused LayerNorm path inside the Cider FP16 Metal
-kernel before W8A8 activation quantization. Keep `--cider-fusion required` experimental
-until downstream task metrics accept this drift.
+The precision drift comes from moving LayerNorm/GELU into Cider FP16 Metal kernels before
+W8A8 activation quantization. Keep `--cider-fusion required` experimental until downstream
+task metrics accept this drift.
 
 Fused versus unfused Cider p99.99 speed, `data/golden_images/smoke.jpg`, materialized
-outputs, 2 warmups, 5 repeats:
+outputs:
 
-| Model | Resolution | Batch | Off p50 | Fused p50 | Speedup |
-| --- | ---: | ---: | ---: | ---: | ---: |
-| SO400M | 256 | 1 | 11.35 ms | 10.93 ms | 1.038x |
-| SO400M | 512 | 1 | 32.32 ms | 31.69 ms | 1.020x |
-| SO400M | 768 | 1 | 92.53 ms | 91.51 ms | 1.011x |
-| SO400M | 512 | 4 | 119.19 ms | 117.85 ms | 1.011x |
-| H | 256 | 1 | 15.69 ms | 15.67 ms | 1.001x |
-| H | 512 | 1 | 47.10 ms | 46.95 ms | 1.003x |
-| H | 768 | 1 | 131.05 ms | 133.85 ms | 0.979x |
-| H | 512 | 4 | 168.89 ms | 168.88 ms | 1.000x |
+| Model | Resolution | Batch | Off p50 | `mlp` p50 | `ln+mlp` p50 | Best speedup |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| SO400M | 256 | 1 | 11.33 ms | 10.60 ms | 10.31 ms | 1.099x |
+| SO400M | 256 | 4 | 27.48 ms | 24.09 ms | 23.51 ms | 1.169x |
+| SO400M | 512 | 1 | 32.54 ms | 28.99 ms | 28.47 ms | 1.143x |
+| SO400M | 512 | 4 | 119.66 ms | 102.97 ms | 100.79 ms | 1.187x |
+| H | 256 | 1 | 15.64 ms | 14.76 ms | 14.53 ms | 1.077x |
+| H | 256 | 4 | 37.42 ms | 32.76 ms | 32.71 ms | 1.144x |
+| H | 512 | 1 | 47.24 ms | 42.84 ms | 42.68 ms | 1.107x |
+| H | 512 | 4 | 169.33 ms | 144.61 ms | 143.67 ms | 1.179x |
 
-With MLX `mx.compile` on SO400M `512x512`, batch 1 improved from 29.65 ms unfused to
-29.17 ms fused, and batch 4 improved from 106.66 ms to 104.70 ms. The patch is therefore
-a small, real low-level improvement, not a 10x path: it only removes two LayerNorm launches
-per transformer block, while attention, MLP second projections, GELU, residual traffic,
-patching, and output materialization still dominate the full encoder.
+The `GELU -> fc2` fusion passed the fast-kill gate: it is a real low-level gain, especially
+for batch throughput. It is still not a 10x path because attention, the two GEMMs
+themselves, residual traffic, patching, and output materialization still dominate the full
+encoder.
 
 ## Segment Profiling
 

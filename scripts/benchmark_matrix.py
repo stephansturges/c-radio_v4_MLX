@@ -74,6 +74,7 @@ def main() -> int:
     parser.add_argument("--no-materialize", action="store_true")
     parser.add_argument("--compile", action="store_true")
     parser.add_argument("--cider-fusion", choices=["off", "auto", "required"], default="off")
+    parser.add_argument("--cider-fusion-targets", choices=["ln", "mlp", "ln+mlp"], default="ln")
     parser.add_argument("--out-dir", type=Path, default=Path("reports/benchmark_matrix"))
     parser.add_argument("--summary", type=Path, default=Path("reports/benchmark-matrix.json"))
     args = parser.parse_args()
@@ -165,6 +166,7 @@ def main() -> int:
                 materialize_outputs=not args.no_materialize,
                 compile_forward=args.compile,
                 cider_fusion=cider_fusion,
+                cider_fusion_targets=args.cider_fusion_targets,
             )
         )
         report = json.loads(report_path.read_text(encoding="utf-8"))
@@ -179,6 +181,7 @@ def main() -> int:
                     "materialize_outputs": report["materialize_outputs"],
                     "compile_forward": report["compile_forward"],
                     "cider_fusion": report["cider_fusion"],
+                    "cider_fusion_targets": report["cider_fusion_targets"],
                     "report": str(report_path),
                     **row,
                 }

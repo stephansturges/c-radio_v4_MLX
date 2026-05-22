@@ -87,6 +87,7 @@ QUANTIZATION_CODE_MODES = {
     3: "nvfp4",
 }
 CIDER_FUSION_MODES = {"off", "auto", "required"}
+CIDER_FUSION_TARGETS = {"ln", "mlp", "ln+mlp"}
 
 
 @dataclass(frozen=True)
@@ -97,6 +98,7 @@ class MLXSO400MConfig:
     patch_size: int = SO400M_PATCH_SIZE
     variant: str = "so400m"
     cider_fusion: str = "off"
+    cider_fusion_targets: str = "ln"
 
 
 class MLXRadioEncoder:
@@ -112,6 +114,9 @@ class MLXRadioEncoder:
         self.spec = spec
         self.dtype = _mlx_dtype(config.dtype)
         self.cider_fusion = _validate_cider_fusion_mode(config.cider_fusion)
+        self.cider_fusion_targets = _validate_cider_fusion_targets(
+            config.cider_fusion_targets
+        )
         self._pos_cache: dict[tuple[int, int], mx.array] = {}
         self._compiled_forward: Any | None = None
 
@@ -124,6 +129,7 @@ class MLXRadioEncoder:
         variant: str = "so400m",
         compile_forward: bool = False,
         cider_fusion: str = "off",
+        cider_fusion_targets: str = "ln",
     ) -> MLXRadioEncoder:
         try:
             from safetensors import safe_open
@@ -159,6 +165,7 @@ class MLXRadioEncoder:
             patch_size=spec.patch_size,
             variant=spec.variant,
             cider_fusion=_validate_cider_fusion_mode(cider_fusion),
+            cider_fusion_targets=_validate_cider_fusion_targets(cider_fusion_targets),
         )
         encoder = cls(weights, config, spec)
         if compile_forward:
@@ -202,6 +209,7 @@ class MLXRadioEncoder:
                 "dtype": self.config.dtype,
                 "variant": self.config.variant,
                 "cider_fusion": self.cider_fusion,
+                "cider_fusion_targets": self.cider_fusion_targets,
             },
         )
 
@@ -236,6 +244,7 @@ class MLXRadioEncoder:
                 "variant": self.config.variant,
                 "batch_size": len(images),
                 "cider_fusion": self.cider_fusion,
+                "cider_fusion_targets": self.cider_fusion_targets,
             },
         )
 
@@ -300,12 +309,14 @@ class MLXRadioEncoder:
 
     def _block(self, x: mx.array, index: int) -> mx.array:
         prefix = f"radio_model.model.blocks.{index}"
-        qkv = self._fused_layer_norm_linear(
-            x,
-            self.weights[f"{prefix}.norm1.weight"],
-            self.weights[f"{prefix}.norm1.bias"],
-            f"{prefix}.attn.qkv",
-        )
+        qkv = None
+        if self._uses_cider_fusion_target("ln"):
+            qkv = self._fused_layer_norm_linear(
+                x,
+                self.weights[f"{prefix}.norm1.weight"],
+                self.weights[f"{prefix}.norm1.bias"],
+                f"{prefix}.attn.qkv",
+            )
         if qkv is None:
             norm1 = _layer_norm(
                 x,
@@ -316,12 +327,14 @@ class MLXRadioEncoder:
         else:
             x = x + self._attention_from_qkv(qkv, prefix)
 
-        fc1 = self._fused_layer_norm_linear(
-            x,
-            self.weights[f"{prefix}.norm2.weight"],
-            self.weights[f"{prefix}.norm2.bias"],
-            f"{prefix}.mlp.fc1",
-        )
+        fc1 = None
+        if self._uses_cider_fusion_target("ln"):
+            fc1 = self._fused_layer_norm_linear(
+                x,
+                self.weights[f"{prefix}.norm2.weight"],
+                self.weights[f"{prefix}.norm2.bias"],
+                f"{prefix}.mlp.fc1",
+            )
         if fc1 is None:
             norm2 = _layer_norm(
                 x,
@@ -370,6 +383,10 @@ class MLXRadioEncoder:
         return self._mlp_from_fc1(x, prefix)
 
     def _mlp_from_fc1(self, x: mx.array, prefix: str) -> mx.array:
+        if self._uses_cider_fusion_target("mlp"):
+            fused = self._fused_gelu_linear(x, f"{prefix}.mlp.fc2")
+            if fused is not None:
+                return fused
         x = _gelu_exact(x)
         return _linear(
             x,
@@ -393,6 +410,21 @@ class MLXRadioEncoder:
             cider_fusion=self.cider_fusion,
         )
 
+    def _fused_gelu_linear(self, x: mx.array, linear_prefix: str) -> mx.array | None:
+        return _fused_cider_gelu_linear(
+            x,
+            self.weights,
+            linear_prefix,
+            cider_fusion=self.cider_fusion,
+        )
+
+    def _uses_cider_fusion_target(self, target: str) -> bool:
+        if self.cider_fusion == "off":
+            return False
+        if self.cider_fusion_targets == "ln+mlp":
+            return target in {"ln", "mlp"}
+        return self.cider_fusion_targets == target
+
 
 class MLXSO400MEncoder(MLXRadioEncoder):
     """Native MLX C-RADIOv4-SO400M forward path."""
@@ -405,6 +437,7 @@ class MLXSO400MEncoder(MLXRadioEncoder):
         revision: str | None = None,
         compile_forward: bool = False,
         cider_fusion: str = "off",
+        cider_fusion_targets: str = "ln",
     ) -> MLXSO400MEncoder:
         encoder = MLXRadioEncoder.load(
             checkpoint_path,
@@ -412,6 +445,7 @@ class MLXSO400MEncoder(MLXRadioEncoder):
             revision=revision,
             variant="so400m",
             cider_fusion=cider_fusion,
+            cider_fusion_targets=cider_fusion_targets,
         )
         wrapped = cls(encoder.weights, encoder.config, encoder.spec)
         if compile_forward:
@@ -430,6 +464,7 @@ class MLXHEncoder(MLXRadioEncoder):
         revision: str | None = None,
         compile_forward: bool = False,
         cider_fusion: str = "off",
+        cider_fusion_targets: str = "ln",
     ) -> MLXHEncoder:
         encoder = MLXRadioEncoder.load(
             checkpoint_path,
@@ -437,6 +472,7 @@ class MLXHEncoder(MLXRadioEncoder):
             revision=revision,
             variant="h",
             cider_fusion=cider_fusion,
+            cider_fusion_targets=cider_fusion_targets,
         )
         wrapped = cls(encoder.weights, encoder.config, encoder.spec)
         if compile_forward:
@@ -677,6 +713,84 @@ def _fused_cider_layer_norm_linear(
     return mx.reshape(y, (*orig_shape[:-1], out_features))
 
 
+def _fused_cider_gelu_linear(
+    x: mx.array,
+    weights: dict[str, mx.array],
+    prefix: str,
+    cider_fusion: str = "off",
+) -> mx.array | None:
+    cider_fusion = _validate_cider_fusion_mode(cider_fusion)
+    if cider_fusion == "off":
+        return None
+
+    cider_weight = weights.get(f"{prefix}.cider_weight")
+    if cider_weight is None:
+        if cider_fusion == "required":
+            raise RuntimeError(
+                f"Cider MLP fusion is required, but {prefix!r} is not a cider-w8a8 linear."
+            )
+        return None
+    if weights.get(f"{prefix}.cider_input_scale") is not None:
+        if cider_fusion == "required":
+            raise RuntimeError(
+                f"Cider MLP fusion for {prefix!r} does not support SmoothQuant input scales."
+            )
+        return None
+
+    try:
+        from cider import ops as cider_ops
+    except ImportError as exc:
+        if cider_fusion == "required":
+            raise RuntimeError(
+                "Cider MLP fusion is required, but the optional Cider package is not installed."
+            ) from exc
+        return None
+
+    group_size = int(_scalar_item(weights[f"{prefix}.cider_group_size"]))
+    if group_size != 0:
+        if cider_fusion == "required":
+            raise RuntimeError(
+                "Cider MLP fusion currently supports per-channel W8A8 bundles only."
+            )
+        return None
+    op = getattr(cider_ops, "gelu_perchannel_linear", None)
+    if op is None:
+        if cider_fusion == "required":
+            raise RuntimeError(
+                "Cider MLP fusion is required, but cider.ops.gelu_perchannel_linear "
+                "is not available. Install a Cider build with GELU+linear kernels."
+            )
+        return None
+    _assert_cider_available()
+
+    padded_meta = weights.get(f"{prefix}.cider_padded_in_features")
+    padded_in_features = (
+        int(_scalar_item(padded_meta)) if padded_meta is not None else int(cider_weight.shape[-1])
+    )
+    out_features_meta = weights.get(f"{prefix}.cider_out_features")
+    out_features = (
+        int(_scalar_item(out_features_meta))
+        if out_features_meta is not None
+        else cider_weight.shape[0]
+    )
+    if x.shape[-1] < padded_in_features:
+        pad_width = padded_in_features - x.shape[-1]
+        padding = mx.zeros((*x.shape[:-1], pad_width), dtype=x.dtype)
+        x = mx.concatenate([x, padding], axis=-1)
+
+    orig_shape = x.shape
+    x_2d = mx.reshape(x, (-1, padded_in_features))
+    bias = weights.get(f"{prefix}.bias")
+    if bias is not None:
+        bias = bias.astype(mx.float16)
+    else:
+        bias = mx.zeros((out_features,), dtype=mx.float16)
+    y = op(x_2d, cider_weight, weights[f"{prefix}.cider_scale"], bias)
+    if y.dtype != x.dtype:
+        y = y.astype(x.dtype)
+    return mx.reshape(y, (*orig_shape[:-1], out_features))
+
+
 @lru_cache(maxsize=1)
 def _assert_cider_available() -> None:
     from cider import is_available
@@ -777,6 +891,13 @@ def _validate_cider_fusion_mode(mode: str) -> str:
         known = ", ".join(sorted(CIDER_FUSION_MODES))
         raise ValueError(f"unsupported cider_fusion={mode!r}; known: {known}")
     return mode
+
+
+def _validate_cider_fusion_targets(targets: str) -> str:
+    if targets not in CIDER_FUSION_TARGETS:
+        known = ", ".join(sorted(CIDER_FUSION_TARGETS))
+        raise ValueError(f"unsupported cider_fusion_targets={targets!r}; known: {known}")
+    return targets
 
 
 def _to_numpy(array: mx.array) -> Any:

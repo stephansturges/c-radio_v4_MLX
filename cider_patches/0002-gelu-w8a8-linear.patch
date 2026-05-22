@@ -1,0 +1,339 @@
+diff --git a/cider/kernels/gelu_quantize.metal b/cider/kernels/gelu_quantize.metal
+new file mode 100644
+index 0000000..4d0c4d0
+--- /dev/null
++++ b/cider/kernels/gelu_quantize.metal
+@@ -0,0 +1,89 @@
++// ============================================================
++// Fused exact GELU + per-token quantization: FP16 -> INT8 + scale
++// Target: Apple M5, Metal 4
++//
++// Each threadgroup handles one row. Threads apply GELU, reduce absmax,
++// and quantize to INT8.
++// ============================================================
++
++#include <metal_stdlib>
++using namespace metal;
++
++inline float erf_approx(float x) {
++  float sign = x < 0.0f ? -1.0f : 1.0f;
++  float ax = abs(x);
++  float t = 1.0f / (1.0f + 0.3275911f * ax);
++  float y =
++      1.0f -
++      (((((1.061405429f * t - 1.453152027f) * t + 1.421413741f) * t -
++         0.284496736f) *
++            t +
++        0.254829592f) *
++       t * exp(-ax * ax));
++  return sign * y;
++}
++
++inline float gelu_exactish(float x) {
++  return 0.5f * x * (1.0f + erf_approx(x * 0.7071067811865476f));
++}
++
++kernel void gelu_quantize_per_token(
++    const device half *X [[buffer(0)]], // [M, K] FP16 input
++    device int8_t *A [[buffer(1)]],     // [M, K] INT8 output
++    device float *scale [[buffer(2)]],  // [M] activation scale
++    constant uint &M [[buffer(3)]],
++    constant uint &K [[buffer(4)]],
++    uint gid [[threadgroup_position_in_grid]],
++    uint lid [[thread_index_in_threadgroup]],
++    uint tg_size [[threads_per_threadgroup]]) {
++  if (gid >= M) {
++    return;
++  }
++
++  const device half *row_in = X + gid * K;
++  device int8_t *row_out = A + gid * K;
++
++  uint sg_id = lid / 32;
++  uint sg_lid = lid % 32;
++  uint num_sgs = (tg_size + 31) / 32;
++
++  threadgroup float sg_maxes[8];
++  threadgroup float shared_scale;
++  threadgroup float shared_inv_scale;
++
++  float local_max = 0.0f;
++  for (uint i = lid; i < K; i += tg_size) {
++    local_max = max(local_max, abs(gelu_exactish(float(row_in[i]))));
++  }
++
++  float lane_max = simd_max(local_max);
++  if (sg_lid == 0) {
++    sg_maxes[sg_id] = lane_max;
++  }
++  threadgroup_barrier(mem_flags::mem_threadgroup);
++
++  if (sg_id == 0) {
++    float row_max = 0.0f;
++    if (sg_lid < num_sgs) {
++      row_max = sg_maxes[sg_lid];
++    }
++    row_max = simd_max(row_max);
++
++    if (sg_lid == 0) {
++      float s = row_max / 127.0f;
++      if (s == 0.0f) {
++        s = 1.0f;
++      }
++      shared_scale = s;
++      shared_inv_scale = 1.0f / s;
++      scale[gid] = s;
++    }
++  }
++  threadgroup_barrier(mem_flags::mem_threadgroup);
++
++  float inv_s = shared_inv_scale;
++  for (uint i = lid; i < K; i += tg_size) {
++    float q = clamp(round(gelu_exactish(float(row_in[i])) * inv_s), -128.0f, 127.0f);
++    row_out[i] = int8_t(q);
++  }
++}
+diff --git a/cider/ops.py b/cider/ops.py
+index 7f8134d..556fed9 100644
+--- a/cider/ops.py
++++ b/cider/ops.py
+@@ -199,2 +199,33 @@ def layernorm_perchannel_linear(
+ 
++def gelu_perchannel_linear(
++    x: mx.array,
++    w: mx.array,
++    scale_w: mx.array,
++    bias: Optional[mx.array] = None,
++    stream: Optional[mx.Stream] = None,
++) -> mx.array:
++    """Fused exact GELU + W8A8 per-channel quantized linear.
++
++    Computes ``perchannel_linear(gelu_exact(x), ...)`` with GELU and activation
++    quantization fused into one Metal kernel before the existing INT8 GEMM.
++    """
++    ext = _load_ext()
++    out_dtype = x.dtype
++    kw = {"stream": stream} if stream is not None else {}
++    N = w.shape[0]
++    if bias is None:
++        bias = mx.zeros((N,), dtype=mx.float16)
++    result = ext.gelu_perchannel_linear(
++        x,
++        w,
++        scale_w,
++        bias,
++        kernel_dir(),
++        **kw,
++    )
++    if out_dtype != mx.float16:
++        result = result.astype(out_dtype, **kw)
++    return result
++
++
+ # Shared placeholder for new_bias (V5 kernel ignores it; Metal needs valid buffer)
+diff --git a/csrc/include/w8a8_primitive.h b/csrc/include/w8a8_primitive.h
+index eefdae7..7e9b2e6 100644
+--- a/csrc/include/w8a8_primitive.h
++++ b/csrc/include/w8a8_primitive.h
+@@ -89,2 +89,36 @@ class LayerNormW8A8Linear : public mx::Primitive {
+ 
++// ── Fused GELU + W8A8 Linear Primitive ──────────────────────────
++// Inputs:
++//   x(M,K) float16, w(N,K) int8, scale_w(N) float32, bias(N) float16
++// Output: [y(M,N) float16]
++//
++// Dispatches exact GELU + per-token activation quantization in one Metal
++// kernel, then reuses the existing INT8 TensorOps GEMM/dequant kernel.
++class GeluW8A8Linear : public mx::Primitive {
++ public:
++  explicit GeluW8A8Linear(mx::Stream stream, const std::string& kernel_dir)
++      : mx::Primitive(stream), kernel_dir_(kernel_dir) {}
++
++  void eval_cpu(
++      const std::vector<mx::array>& inputs,
++      std::vector<mx::array>& outputs) override {
++    throw std::runtime_error("GeluW8A8Linear: CPU not supported");
++  }
++
++  void eval_gpu(
++      const std::vector<mx::array>& inputs,
++      std::vector<mx::array>& outputs) override;
++
++  const char* name() const override {
++    return "GeluW8A8Linear";
++  }
++
++  bool is_equivalent(const mx::Primitive& other) const override {
++    return true;
++  }
++
++ private:
++  std::string kernel_dir_;
++};
++
+ 
+@@ -140,2 +174,10 @@ mx::array layernorm_perchannel_linear(
+ 
++mx::array gelu_perchannel_linear(
++    const mx::array& x,       // [M, K] float16
++    const mx::array& w,       // [N, K] int8
++    const mx::array& scale_w, // [N] float32
++    const mx::array& bias,    // [N] float16
++    const std::string& kernel_dir,
++    mx::StreamOrDevice s = {});
++
+ 
+diff --git a/csrc/src/prim_bindings.cpp b/csrc/src/prim_bindings.cpp
+index e1017a7..4c4a603 100644
+--- a/csrc/src/prim_bindings.cpp
++++ b/csrc/src/prim_bindings.cpp
+@@ -27,2 +27,7 @@ NB_MODULE(_cider_prim, m) {
+ 
++  m.def("gelu_perchannel_linear", &cider::gelu_perchannel_linear, "x"_a,
++        "w"_a, "scale_w"_a, "bias"_a, "kernel_dir"_a, nb::kw_only(),
++        "stream"_a = nb::none(),
++        "Fused GELU + W8A8 linear: y = dequant(quant_a(gelu(x)) @ w_int8) + bias");
++
+   m.def("w4a8_linear", &cider::w4a8_linear, "x"_a, "packed_w"_a, "scale_w"_a,
+diff --git a/csrc/src/w8a8_primitive.mm b/csrc/src/w8a8_primitive.mm
+index 971dbce..9bdd4e6 100644
+--- a/csrc/src/w8a8_primitive.mm
++++ b/csrc/src/w8a8_primitive.mm
+@@ -59,2 +59,3 @@ public:
+         compile_source(mtl_device, kernel_dir + "/layernorm_quantize.metal");
++    gelu_lib_ = compile_source(mtl_device, kernel_dir + "/gelu_quantize.metal");
+     mv_lib_ = compile_source(mtl_device, kernel_dir + "/w8a8_int8_mv.metal");
+@@ -85,2 +86,3 @@ private:
+   MTL::Library *layernorm_lib_ = nullptr;
++  MTL::Library *gelu_lib_ = nullptr;
+   MTL::Library *mv_lib_ = nullptr;
+@@ -115,3 +117,4 @@ private:
+       id<MTLFunction> func = nil;
+-      for (auto *lib : {matmul_lib_, quantize_lib_, layernorm_lib_, mv_lib_}) {
++      for (auto *lib :
++           {matmul_lib_, quantize_lib_, layernorm_lib_, gelu_lib_, mv_lib_}) {
+         if (!lib) continue;
+@@ -419,2 +422,123 @@ array layernorm_perchannel_linear(const array &x, const array &norm_weight,
+ 
++void GeluW8A8Linear::eval_gpu(const std::vector<array> &inputs,
++                              std::vector<array> &outputs) {
++  auto &x = inputs[0];       // [M, K] float16
++  auto &w = inputs[1];       // [N, K] int8
++  auto &scale_w = inputs[2]; // [N] float32
++  auto &bias = inputs[3];    // [N] float16
++  auto &out = outputs[0];    // [M, N] float16
++
++  uint32_t M = static_cast<uint32_t>(x.shape(0));
++  uint32_t N = static_cast<uint32_t>(w.shape(0));
++  uint32_t K = static_cast<uint32_t>(w.shape(1));
++
++  out.set_data(allocator::malloc(out.nbytes()));
++
++  auto &cache = PipelineCache::instance();
++  cache.ensure_init(kernel_dir_);
++
++  auto &s = stream();
++  auto &enc = metal::get_command_encoder(s);
++
++  size_t a_bytes = static_cast<size_t>(M) * K;
++  size_t sa_bytes = static_cast<size_t>(M) * sizeof(float);
++
++  array a_int8({static_cast<int>(M), static_cast<int>(K)}, int8, nullptr, {});
++  a_int8.set_data(allocator::malloc(a_bytes));
++
++  array sa({static_cast<int>(M)}, float32, nullptr, {});
++  sa.set_data(allocator::malloc(sa_bytes));
++
++  {
++    auto *pso = cache.get("gelu_quantize_per_token");
++    enc.set_compute_pipeline_state(pso);
++    enc.set_input_array(x, 0);
++    enc.set_output_array(a_int8, 1);
++    enc.set_output_array(sa, 2);
++    enc.set_bytes(M, 3);
++    enc.set_bytes(K, 4);
++    uint32_t tg = std::min(256u, std::max(32u, ((K + 31) / 32) * 32));
++    enc.dispatch_threadgroups(MTL::Size::Make(M, 1, 1),
++                              MTL::Size::Make(tg, 1, 1));
++  }
++
++  enc.barrier();
++
++  {
++    bool use_small = (M <= 64);
++    const char *kname = use_small ? "w8a8_matmul_fused_dequant_small"
++                                  : "w8a8_matmul_fused_dequant";
++    uint32_t BM = use_small ? TileSmall::BM : TileLarge::BM;
++    uint32_t BN = use_small ? TileSmall::BN : TileLarge::BN;
++    uint32_t threads = use_small ? TileSmall::THREADS : TileLarge::THREADS;
++
++    auto *pso = cache.get(kname);
++    enc.set_compute_pipeline_state(pso);
++
++    uint32_t tiles_n = (N + BN - 1) / BN;
++    uint32_t tiles_m = (M + BM - 1) / BM;
++    uint32_t swizzle_log;
++    if (tiles_m <= 3) {
++      swizzle_log = 0;
++    } else if (tiles_m <= 6) {
++      swizzle_log = 1;
++    } else {
++      swizzle_log = 2;
++    }
++    uint32_t tile = 1u << swizzle_log;
++    uint32_t grid_x = tiles_n * tile;
++    uint32_t grid_y = (tiles_m + tile - 1) / tile;
++
++    enc.set_input_array(a_int8, 0);
++    enc.set_input_array(w, 1);
++    enc.set_output_array(out, 2);
++    enc.set_bytes(M, 3);
++    enc.set_bytes(N, 4);
++    enc.set_bytes(K, 5);
++    enc.set_input_array(sa, 6);
++    enc.set_input_array(scale_w, 7);
++    enc.set_bytes(swizzle_log, 8);
++    enc.set_bytes(tiles_m, 9);
++    enc.set_bytes(tiles_n, 10);
++    enc.set_input_array(bias, 11);
++
++    enc.dispatch_threadgroups(MTL::Size::Make(grid_x, grid_y, 1),
++                              MTL::Size::Make(threads, 1, 1));
++  }
++
++  enc.add_temporary(a_int8);
++  enc.add_temporary(sa);
++}
++
++array gelu_perchannel_linear(const array &x, const array &w,
++                             const array &scale_w, const array &bias,
++                             const std::string &kernel_dir, StreamOrDevice s) {
++  if (x.ndim() != 2) {
++    throw std::invalid_argument("gelu_perchannel_linear: x must be 2D [M,K]");
++  }
++  if (w.ndim() != 2) {
++    throw std::invalid_argument("gelu_perchannel_linear: w must be 2D [N,K]");
++  }
++  if (scale_w.ndim() != 1) {
++    throw std::invalid_argument("gelu_perchannel_linear: scale_w must be 1D [N]");
++  }
++  if (x.shape(1) != w.shape(1)) {
++    throw std::invalid_argument("gelu_perchannel_linear: x and w must share K");
++  }
++
++  int M = x.shape(0);
++  int N = w.shape(0);
++  auto stream = to_stream(s);
++
++  auto result =
++      array({M, N}, float16,
++            std::make_shared<GeluW8A8Linear>(stream, kernel_dir),
++            {astype(x, float16, stream), astype(w, int8, stream),
++             astype(scale_w, float32, stream), astype(bias, float16, stream)});
++  if (x.dtype() == bfloat16) {
++    return astype(result, bfloat16, stream);
++  }
++  return result;
++}
++
+ // ── Int8MatMulInt32 primitive (raw INT32 output, no dequant) ────
