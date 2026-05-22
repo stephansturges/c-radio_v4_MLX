@@ -17,7 +17,6 @@ class BenchmarkCase:
     checkpoint: Path
     dtype: str
     quantization: str
-    quantized_runtime: str = "packed"
 
 
 def main() -> int:
@@ -45,71 +44,11 @@ def main() -> int:
 
     cases = [
         BenchmarkCase("so400m-bf16", "so400m", args.so400m_bf16, "bfloat16", "none"),
-        BenchmarkCase(
-            "so400m-8bit-packed",
-            "so400m",
-            args.so400m_8bit,
-            "bfloat16",
-            "8bit-affine",
-            "packed",
-        ),
-        BenchmarkCase(
-            "so400m-8bit-dequantized",
-            "so400m",
-            args.so400m_8bit,
-            "bfloat16",
-            "8bit-affine",
-            "dequantize",
-        ),
-        BenchmarkCase(
-            "so400m-mxfp8-packed",
-            "so400m",
-            args.so400m_mxfp8,
-            "bfloat16",
-            "mxfp8",
-            "packed",
-        ),
-        BenchmarkCase(
-            "so400m-mxfp8-dequantized",
-            "so400m",
-            args.so400m_mxfp8,
-            "bfloat16",
-            "mxfp8",
-            "dequantize",
-        ),
+        BenchmarkCase("so400m-8bit", "so400m", args.so400m_8bit, "bfloat16", "8bit-affine"),
+        BenchmarkCase("so400m-mxfp8", "so400m", args.so400m_mxfp8, "bfloat16", "mxfp8"),
         BenchmarkCase("h-bf16", "h", args.h_bf16, "bfloat16", "none"),
-        BenchmarkCase(
-            "h-8bit-packed",
-            "h",
-            args.h_8bit,
-            "bfloat16",
-            "8bit-affine",
-            "packed",
-        ),
-        BenchmarkCase(
-            "h-8bit-dequantized",
-            "h",
-            args.h_8bit,
-            "bfloat16",
-            "8bit-affine",
-            "dequantize",
-        ),
-        BenchmarkCase(
-            "h-mxfp8-packed",
-            "h",
-            args.h_mxfp8,
-            "bfloat16",
-            "mxfp8",
-            "packed",
-        ),
-        BenchmarkCase(
-            "h-mxfp8-dequantized",
-            "h",
-            args.h_mxfp8,
-            "bfloat16",
-            "mxfp8",
-            "dequantize",
-        ),
+        BenchmarkCase("h-8bit", "h", args.h_8bit, "bfloat16", "8bit-affine"),
+        BenchmarkCase("h-mxfp8", "h", args.h_mxfp8, "bfloat16", "mxfp8"),
     ]
 
     args.out_dir.mkdir(parents=True, exist_ok=True)
@@ -122,7 +61,6 @@ def main() -> int:
                     "variant": case.variant,
                     "checkpoint": str(case.checkpoint),
                     "quantization": case.quantization,
-                    "quantized_runtime": case.quantized_runtime,
                     "benchmark_state": "skipped_missing_checkpoint",
                 }
             )
@@ -137,7 +75,6 @@ def main() -> int:
                 variant=case.variant,
                 image_size=args.image_sizes,
                 dtype=case.dtype,
-                quantized_runtime=case.quantized_runtime,
                 batch_size=args.batch_sizes,
                 warmups=args.warmups,
                 repeats=args.repeats,
@@ -153,7 +90,6 @@ def main() -> int:
                     "variant": case.variant,
                     "checkpoint": str(case.checkpoint),
                     "quantization": case.quantization,
-                    "quantized_runtime": report["quantized_runtime"],
                     "dtype": case.dtype,
                     "materialize_outputs": report["materialize_outputs"],
                     "compile_forward": report["compile_forward"],

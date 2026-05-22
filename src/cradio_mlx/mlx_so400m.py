@@ -85,17 +85,6 @@ QUANTIZATION_CODE_MODES = {
     2: "mxfp8",
     3: "nvfp4",
 }
-QUANTIZED_RUNTIME_MODES = {"packed", "dequantize"}
-QUANTIZED_WEIGHT_SUFFIXES = (
-    ".qweight",
-    ".qscales",
-    ".qbiases",
-    ".qbits",
-    ".qgroup_size",
-    ".qmode_code",
-    ".qin_features",
-    ".qpadded_in_features",
-)
 
 
 @dataclass(frozen=True)
@@ -105,7 +94,6 @@ class MLXSO400MConfig:
     dtype: str = "float32"
     patch_size: int = SO400M_PATCH_SIZE
     variant: str = "so400m"
-    quantized_runtime: str = "packed"
 
 
 class MLXRadioEncoder:
@@ -129,7 +117,6 @@ class MLXRadioEncoder:
         dtype: str = "float32",
         revision: str | None = None,
         variant: str = "so400m",
-        quantized_runtime: str = "packed",
     ) -> MLXRadioEncoder:
         try:
             from safetensors import safe_open
@@ -143,7 +130,6 @@ class MLXRadioEncoder:
             raise ValueError(f"unknown C-RADIOv4 MLX variant={variant!r}; known: {known}") from exc
 
         revision = revision or spec.revision
-        quantized_runtime = _validate_quantized_runtime(quantized_runtime)
 
         root = Path(checkpoint_path)
         model_path = root / "model.safetensors" if root.is_dir() else root
@@ -158,9 +144,6 @@ class MLXRadioEncoder:
                 if _should_cast_loaded_weight(key):
                     array = array.astype(target_dtype)
                 weights[key] = array
-        has_quantized_weights = any(key.endswith(".qweight") for key in weights)
-        if quantized_runtime == "dequantize":
-            weights = _dequantize_loaded_weights(weights, target_dtype)
         mx.eval(list(weights.values()))
         config = MLXSO400MConfig(
             model_id=spec.model_id,
@@ -168,7 +151,6 @@ class MLXRadioEncoder:
             dtype=dtype,
             patch_size=spec.patch_size,
             variant=spec.variant,
-            quantized_runtime=quantized_runtime if has_quantized_weights else "dense",
         )
         return cls(weights, config, spec)
 
@@ -201,7 +183,6 @@ class MLXRadioEncoder:
                 "revision": self.config.revision,
                 "dtype": self.config.dtype,
                 "variant": self.config.variant,
-                "quantized_runtime": self.config.quantized_runtime,
             },
         )
 
@@ -234,7 +215,6 @@ class MLXRadioEncoder:
                 "revision": self.config.revision,
                 "dtype": self.config.dtype,
                 "variant": self.config.variant,
-                "quantized_runtime": self.config.quantized_runtime,
                 "batch_size": len(images),
             },
         )
@@ -362,14 +342,12 @@ class MLXSO400MEncoder(MLXRadioEncoder):
         checkpoint_path: str | Path,
         dtype: str = "float32",
         revision: str | None = None,
-        quantized_runtime: str = "packed",
     ) -> MLXSO400MEncoder:
         encoder = MLXRadioEncoder.load(
             checkpoint_path,
             dtype=dtype,
             revision=revision,
             variant="so400m",
-            quantized_runtime=quantized_runtime,
         )
         return cls(encoder.weights, encoder.config, encoder.spec)
 
@@ -383,14 +361,12 @@ class MLXHEncoder(MLXRadioEncoder):
         checkpoint_path: str | Path,
         dtype: str = "float32",
         revision: str | None = None,
-        quantized_runtime: str = "packed",
     ) -> MLXHEncoder:
         encoder = MLXRadioEncoder.load(
             checkpoint_path,
             dtype=dtype,
             revision=revision,
             variant="h",
-            quantized_runtime=quantized_runtime,
         )
         return cls(encoder.weights, encoder.config, encoder.spec)
 
@@ -518,59 +494,19 @@ def _to_numpy(array: mx.array) -> Any:
 def _should_cast_loaded_weight(key: str) -> bool:
     if key == "radio_model.summary_idxs" or "input_conditioner" in key:
         return False
-    if key.endswith(QUANTIZED_WEIGHT_SUFFIXES):
+    quantized_suffixes = (
+        ".qweight",
+        ".qscales",
+        ".qbiases",
+        ".qbits",
+        ".qgroup_size",
+        ".qmode_code",
+        ".qin_features",
+        ".qpadded_in_features",
+    )
+    if key.endswith(quantized_suffixes):
         return False
     return True
-
-
-def _validate_quantized_runtime(value: str) -> str:
-    if value not in QUANTIZED_RUNTIME_MODES:
-        known = ", ".join(sorted(QUANTIZED_RUNTIME_MODES))
-        raise ValueError(f"unsupported quantized_runtime={value!r}; known: {known}")
-    return value
-
-
-def _dequantize_loaded_weights(
-    weights: dict[str, mx.array],
-    target_dtype: Any,
-) -> dict[str, mx.array]:
-    """Expand packed quantized linear weights once so dense MLX kernels handle inference."""
-    out = dict(weights)
-    prefixes = sorted(key[: -len(".qweight")] for key in weights if key.endswith(".qweight"))
-    dense_weights: list[mx.array] = []
-
-    for prefix in prefixes:
-        mode_code = weights.get(f"{prefix}.qmode_code")
-        mode = (
-            QUANTIZATION_CODE_MODES[int(_scalar_item(mode_code))]
-            if mode_code is not None
-            else "affine"
-        )
-        dense = mx.dequantize(
-            weights[f"{prefix}.qweight"],
-            weights[f"{prefix}.qscales"],
-            weights.get(f"{prefix}.qbiases"),
-            group_size=int(_scalar_item(weights[f"{prefix}.qgroup_size"])),
-            bits=int(_scalar_item(weights[f"{prefix}.qbits"])),
-            mode=mode,
-            dtype=target_dtype,
-        )
-
-        in_features_meta = weights.get(f"{prefix}.qin_features")
-        if in_features_meta is not None:
-            in_features = int(_scalar_item(in_features_meta))
-            if dense.shape[-1] != in_features:
-                dense = dense[..., :in_features]
-
-        dense = dense.astype(target_dtype)
-        out[f"{prefix}.weight"] = dense
-        dense_weights.append(dense)
-        for suffix in QUANTIZED_WEIGHT_SUFFIXES:
-            out.pop(f"{prefix}{suffix}", None)
-
-    if dense_weights:
-        mx.eval(*dense_weights)
-    return out
 
 
 def _scalar_item(value: mx.array) -> int | float:

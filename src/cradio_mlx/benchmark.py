@@ -39,7 +39,6 @@ class MLXSO400MBenchmarkRequest:
     variant: str = "so400m"
     image_size: int | tuple[int, int] | list[int | tuple[int, int]] = 512
     dtype: str = "bfloat16"
-    quantized_runtime: str = "packed"
     batch_size: int | list[int] = 1
     warmups: int = 1
     repeats: int = 3
@@ -147,7 +146,6 @@ def write_mlx_so400m_benchmark(request: MLXSO400MBenchmarkRequest) -> Path:
         request.checkpoint,
         dtype=request.dtype,
         revision=request.revision,
-        quantized_runtime=request.quantized_runtime,
     )
     forward = mx.compile(encoder.forward) if request.compile_forward else encoder.forward
     load_seconds = perf_counter() - load_start
@@ -224,7 +222,6 @@ def write_mlx_so400m_benchmark(request: MLXSO400MBenchmarkRequest) -> Path:
         "revision": encoder.config.revision,
         "variant": encoder.config.variant,
         "dtype": request.dtype,
-        "quantized_runtime": encoder.config.quantized_runtime,
         "load_seconds": load_seconds,
         "images": [str(path) for path in image_paths],
         "materialize_outputs": request.materialize_outputs,

@@ -53,10 +53,10 @@ Measured against local bf16 MLX bundles at `512x512` on 12 WALDO crop images.
 
 | Bundle | Summary cosine mean/min | Spatial cosine mean/min |
 | --- | ---: | ---: |
-| `so400m/8bit-affine` | 0.999913 / 0.999885 | 0.999927 / 0.999881 |
-| `h/8bit-affine` | 0.999907 / 0.999884 | 0.999828 / 0.999761 |
-| `so400m/mxfp8` | 0.989676 / 0.949449 | 0.993379 / 0.978096 |
-| `h/mxfp8` | 0.990272 / 0.974978 | 0.988784 / 0.976665 |
+| `so400m/8bit-affine` | 0.999907 / 0.999868 | 0.999930 / 0.999876 |
+| `h/8bit-affine` | 0.999899 / 0.999878 | 0.999830 / 0.999764 |
+| `so400m/mxfp8` | 0.989820 / 0.950717 | 0.993502 / 0.977879 |
+| `h/mxfp8` | 0.990217 / 0.974710 | 0.988696 / 0.976071 |
 
 The 8-bit affine bundles are the recommended compact/high-precision artifacts. The
 `mxfp8` bundles are included for experimentation and are lower precision in these checks.
@@ -65,21 +65,15 @@ The 8-bit affine bundles are the recommended compact/high-precision artifacts. T
 
 Fast-kernel compiled-forward MLX measurements on Apple Silicon at `512x512`, batch 1:
 
-| Bundle | Runtime | p50 latency | Throughput |
-| --- | --- | ---: | ---: |
-| `so400m/8bit-affine` | packed | 47.1 ms | 21.2 images/s |
-| `so400m/8bit-affine` | dequantize at load | 32.4 ms | 30.9 images/s |
-| `h/8bit-affine` | packed | 58.8 ms | 17.0 images/s |
-| `h/8bit-affine` | dequantize at load | 45.5 ms | 22.0 images/s |
-| `so400m/mxfp8` | packed | 49.8 ms | 20.1 images/s |
-| `so400m/mxfp8` | dequantize at load | 32.5 ms | 30.8 images/s |
-| `h/mxfp8` | packed | 52.6 ms | 19.0 images/s |
-| `h/mxfp8` | dequantize at load | 45.4 ms | 22.0 images/s |
+| Bundle | p50 latency | Throughput |
+| --- | ---: | ---: |
+| `so400m/8bit-affine` | 51.6 ms | 19.4 images/s |
+| `h/8bit-affine` | 73.2 ms | 13.7 images/s |
+| `so400m/mxfp8` | 62.5 ms | 16.0 images/s |
+| `h/mxfp8` | 63.5 ms | 15.8 images/s |
 
-`packed` keeps weights low-bit during inference and reduces runtime weight memory, but it
-is slower than dense bf16 on this ViT encoder. `dequantize at load` expands the compact
-artifact to bf16 weights once during load, then uses the dense MLX kernels; it recovers
-bf16-class throughput while using bf16 runtime weight memory.
+For latency-sensitive inference, the bf16 bundles in the implementation repo remain faster
+than the quantized formats. These quantized bundles prioritize compact storage.
 
 ## Usage
 
@@ -93,7 +87,6 @@ cradio-mlx embed \
   --image image.jpg \
   --image-size 512 \
   --dtype bfloat16 \
-  --quantized-runtime dequantize \
   --save-npz embedding.npz
 ```
 
@@ -106,7 +99,6 @@ cradio-mlx embed \
   --image image.jpg \
   --image-size 512 \
   --dtype bfloat16 \
-  --quantized-runtime dequantize \
   --save-npz embedding.npz
 ```
 
