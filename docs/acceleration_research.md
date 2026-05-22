@@ -43,6 +43,11 @@ This document tracks the current speedup levers for the MLX C-RADIOv4 runtime.
    30.1 ms at `512x512` batch 1; H p99.99 moved from 43.7 ms to 49.1 ms. Keep it as an
    experiment for downstream precision recovery, not as a throughput artifact.
 
+9. MLX `qqmm` is not usable for this ViT general-matrix case yet.
+   MLX exposes activation quantization for `mxfp8`/`nvfp4` through `nn.QQLinear`, but the
+   underlying `mx.qqmm` path raises `RuntimeError: [QQMatmul] NYI for the general case`
+   on C-RADIOv4 token matrices. Revisit this when MLX implements the general case.
+
 ## Current Best Modes
 
 | Use case | Mode |
@@ -57,6 +62,8 @@ This document tracks the current speedup levers for the MLX C-RADIOv4 runtime.
 
 - AWQ/QuaRot or layer-exclusion calibration for Cider W8A8/W4A8. SmoothQuant alpha `0.5`
   was tested and improved W8A8 precision, but not speed.
+- MLX `qqmm` for `mxfp8`/`nvfp4` if future MLX releases support the general ViT matrix
+  shapes used here.
 - ViTDet/windowed attention mode. The C-RADIOv4 report highlights ViTDet for high-resolution
   efficiency, but the current local configs have `vitdet_window_size: null`. A correct MLX
   implementation would need a PyTorch reference run with ViTDet enabled and separate parity

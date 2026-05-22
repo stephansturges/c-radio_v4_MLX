@@ -110,6 +110,7 @@ class MLXRadioEncoder:
         self.spec = spec
         self.dtype = _mlx_dtype(config.dtype)
         self._pos_cache: dict[tuple[int, int], mx.array] = {}
+        self._compiled_forward: Any | None = None
 
     @classmethod
     def load(
@@ -118,6 +119,7 @@ class MLXRadioEncoder:
         dtype: str = "float32",
         revision: str | None = None,
         variant: str = "so400m",
+        compile_forward: bool = False,
     ) -> MLXRadioEncoder:
         try:
             from safetensors import safe_open
@@ -153,7 +155,17 @@ class MLXRadioEncoder:
             patch_size=spec.patch_size,
             variant=spec.variant,
         )
-        return cls(weights, config, spec)
+        encoder = cls(weights, config, spec)
+        if compile_forward:
+            encoder.compile_forward()
+        return encoder
+
+    def compile_forward(self) -> None:
+        self._compiled_forward = mx.compile(self.forward)
+
+    def _run_forward(self, pixel_values: mx.array) -> tuple[mx.array, mx.array]:
+        forward = self._compiled_forward or self.forward
+        return forward(pixel_values)
 
     def encode_image(
         self,
@@ -161,7 +173,7 @@ class MLXRadioEncoder:
         image_size: int | tuple[int, int] = 512,
     ) -> EmbeddingResult:
         pixel_values = _load_rescaled_image(image, image_size)
-        summary, spatial = self.forward(pixel_values)
+        summary, spatial = self._run_forward(pixel_values)
         mx.eval(summary, spatial)
 
         if isinstance(image_size, int):
@@ -193,7 +205,7 @@ class MLXRadioEncoder:
         image_size: int | tuple[int, int] = 512,
     ) -> EmbeddingResult:
         pixel_values = _load_rescaled_images(images, image_size)
-        summary, spatial = self.forward(pixel_values)
+        summary, spatial = self._run_forward(pixel_values)
         mx.eval(summary, spatial)
 
         if isinstance(image_size, int):
@@ -343,6 +355,7 @@ class MLXSO400MEncoder(MLXRadioEncoder):
         checkpoint_path: str | Path,
         dtype: str = "float32",
         revision: str | None = None,
+        compile_forward: bool = False,
     ) -> MLXSO400MEncoder:
         encoder = MLXRadioEncoder.load(
             checkpoint_path,
@@ -350,7 +363,10 @@ class MLXSO400MEncoder(MLXRadioEncoder):
             revision=revision,
             variant="so400m",
         )
-        return cls(encoder.weights, encoder.config, encoder.spec)
+        wrapped = cls(encoder.weights, encoder.config, encoder.spec)
+        if compile_forward:
+            wrapped.compile_forward()
+        return wrapped
 
 
 class MLXHEncoder(MLXRadioEncoder):
@@ -362,6 +378,7 @@ class MLXHEncoder(MLXRadioEncoder):
         checkpoint_path: str | Path,
         dtype: str = "float32",
         revision: str | None = None,
+        compile_forward: bool = False,
     ) -> MLXHEncoder:
         encoder = MLXRadioEncoder.load(
             checkpoint_path,
@@ -369,7 +386,10 @@ class MLXHEncoder(MLXRadioEncoder):
             revision=revision,
             variant="h",
         )
-        return cls(encoder.weights, encoder.config, encoder.spec)
+        wrapped = cls(encoder.weights, encoder.config, encoder.spec)
+        if compile_forward:
+            wrapped.compile_forward()
+        return wrapped
 
 
 def _linear(x: mx.array, weights: dict[str, mx.array], prefix: str) -> mx.array:

@@ -90,6 +90,7 @@ def build_parser() -> argparse.ArgumentParser:
     embed.add_argument("--image-size", nargs="+", type=int, default=[512])
     embed.add_argument("--dtype", default="bfloat16")
     embed.add_argument("--device", default="auto")
+    embed.add_argument("--compile", action="store_true")
     embed.add_argument("--save-npz", type=Path)
 
     capture = subparsers.add_parser(
@@ -245,6 +246,7 @@ def main(argv: list[str] | None = None) -> int:
                 args.checkpoint,
                 dtype=args.dtype,
                 revision=args.revision,
+                compile_forward=args.compile,
             ).encode_image(args.image, image_size=_image_size(args.image_size))
         else:
             result = CRadioEncoder.from_pretrained(

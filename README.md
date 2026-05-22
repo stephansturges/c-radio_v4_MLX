@@ -236,6 +236,22 @@ python -m pip install -U pip
 python -m pip install -e ".[dev,cider]"
 ```
 
+For long-running local services, use compiled MLX forward after warmup:
+
+```sh
+cradio-mlx embed \
+  --backend mlx-so400m \
+  --checkpoint bundles/c-radiov4-so400m-bf16 \
+  --image image.jpg \
+  --image-size 512 \
+  --dtype bfloat16 \
+  --compile \
+  --save-npz embedding.npz
+```
+
+The first call pays MLX compilation overhead for that input shape; repeated calls at the
+same resolution are the intended use.
+
 ## Download Checkpoints
 
 The model weights are not committed. Download them from Hugging Face at pinned revisions:
