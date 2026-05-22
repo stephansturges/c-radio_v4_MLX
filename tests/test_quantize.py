@@ -48,6 +48,34 @@ def test_reject_clip_percentile_for_mlx_quantization():
         validate_quantization(bits=8, group_size=64, mode="affine", clip_percentile=99.9)
 
 
+def test_reject_smooth_scales_for_weight_only_quantization(tmp_path):
+    source = tmp_path / "source"
+    BundleManifest(
+        model_id="nvidia/C-RADIOv4-H",
+        revision="abc123",
+        variant="h",
+        dtype="bfloat16",
+    ).save(source)
+    save_file(
+        {"radio_model.model.blocks.0.attn.qkv.weight": np.ones((64, 64), dtype=np.float32)},
+        source / "model.safetensors",
+    )
+    scales = tmp_path / "scales.npz"
+    np.savez(scales, **{"radio_model.model.blocks.0.attn.qkv": np.ones((64,), dtype=np.float32)})
+
+    with pytest.raises(ValueError, match="smooth_scales"):
+        quantize_bundle(
+            QuantizationRequest(
+                model=source,
+                out=tmp_path / "quantized",
+                bits=8,
+                group_size=64,
+                mode="affine",
+                smooth_scales=scales,
+            )
+        )
+
+
 def test_quantize_dry_run_writes_planned_manifest(tmp_path):
     source = tmp_path / "source"
     BundleManifest(
@@ -160,3 +188,50 @@ def test_quantize_mxfp8_writes_scale_only_mode_metadata(tmp_path):
         assert handle.get_tensor("radio_model.model.blocks.0.attn.proj.qmode_code").tolist() == [
             2
         ]
+
+
+def test_quantize_cider_w8a8_writes_smooth_input_scale(tmp_path):
+    source = tmp_path / "source"
+    BundleManifest(
+        model_id="nvidia/C-RADIOv4-SO400M",
+        revision="abc123",
+        variant="so400m",
+        dtype="bfloat16",
+    ).save(source)
+    save_file(
+        {
+            "radio_model.model.blocks.0.attn.proj.weight": np.ones((4, 6), dtype=np.float32),
+        },
+        source / "model.safetensors",
+    )
+    scales = tmp_path / "scales.npz"
+    np.savez(
+        scales,
+        **{
+            "radio_model.model.blocks.0.attn.proj": np.array(
+                [2.0, 3.0, 4.0, 5.0, 6.0, 7.0],
+                dtype=np.float32,
+            )
+        },
+    )
+
+    manifest_path = quantize_bundle(
+        QuantizationRequest(
+            model=source,
+            out=tmp_path / "cider",
+            bits=8,
+            group_size=64,
+            mode="cider-w8a8",
+            smooth_scales=scales,
+        )
+    )
+
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert manifest["quantization"]["smooth_scales"] == str(scales)
+    assert manifest["extra"]["quantization_stats"]["smoothed_tensors"] == 1
+
+    with safe_open(tmp_path / "cider" / "model.safetensors", framework="numpy") as handle:
+        scale = handle.get_tensor("radio_model.model.blocks.0.attn.proj.cider_input_scale")
+        assert scale.shape == (64,)
+        assert scale[:6].tolist() == [2.0, 3.0, 4.0, 5.0, 6.0, 7.0]
+        assert np.all(scale[6:] == 1.0)

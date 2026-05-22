@@ -22,16 +22,16 @@ Bundle paths in that repository:
 
 | Path | Model | Format | Recommended use |
 | --- | --- | --- | --- |
-| `so400m/8bit-affine` | C-RADIOv4-SO400M | 8-bit affine, group size 64 | Compact/high-precision |
-| `h/8bit-affine` | C-RADIOv4-H | 8-bit affine, group size 64 | Compact/high-precision |
+| `so400m/8bit-affine` | C-RADIOv4-SO400M | 8-bit affine, group size 64 | Compact/high-precision, not a throughput tier |
+| `h/8bit-affine` | C-RADIOv4-H | 8-bit affine, group size 64 | Compact/high-precision, not a throughput tier |
 | `so400m/cider-w8a8` | C-RADIOv4-SO400M | Cider W8A8, per-channel | M5+ compact/sometimes faster |
 | `h/cider-w8a8` | C-RADIOv4-H | Cider W8A8, per-channel | M5+ compact/faster |
 | `so400m/cider-w8a8-g128` | C-RADIOv4-SO400M | Cider W8A8, group size 128 | M5+ balanced precision/speed |
 | `h/cider-w8a8-g128` | C-RADIOv4-H | Cider W8A8, group size 128 | M5+ balanced precision/speed |
 | `so400m/cider-w8a8-p9999` | C-RADIOv4-SO400M | Cider W8A8, 99.99 percentile clip | M5+ fastest experimental |
 | `h/cider-w8a8-p9999` | C-RADIOv4-H | Cider W8A8, 99.99 percentile clip | M5+ fastest experimental |
-| `so400m/mxfp8` | C-RADIOv4-SO400M | `mxfp8`, group size 32 | Experimental/lower precision |
-| `h/mxfp8` | C-RADIOv4-H | `mxfp8`, group size 32 | Experimental/lower precision |
+| `so400m/mxfp8` | C-RADIOv4-SO400M | `mxfp8`, group size 32 | Experimental/lower precision, not recommended |
+| `h/mxfp8` | C-RADIOv4-H | `mxfp8`, group size 32 | Experimental/lower precision, not recommended |
 
 Pinned revisions used for current parity and benchmark runs:
 
@@ -56,6 +56,8 @@ Implemented:
 - 8-bit affine and `mxfp8` MLX packed-weight quantization for supported linear layers
 - optional Cider W8A8 runtime bundles that use packed int8 weights plus online int8
   activation quantization on Apple M5+ INT8 kernels
+- optional SmoothQuant-style calibration scales for Cider experiments without
+  dequantizing weights back to dense bf16
 - fused MLX fast attention and layernorm kernels in the native forward path
 - broad MLX benchmark matrix by model, resolution, batch size, dtype, and quantization mode
 - local-checkpoint parity tests that skip when checkpoints are absent
@@ -112,21 +114,24 @@ ViT workload, weight-only `mxfp8` was smaller but lower precision and slower tha
 came from MLX fast attention/layernorm plus compilation, not from the quantized matmul
 formats.
 
-The quantized HF artifacts are packed runtime bundles. The MLX `8bit-affine` and `mxfp8`
-formats keep weights packed and call `mx.quantized_matmul`, but they are weight-only
-paths: activations, attention, layernorm, GELU, residual traffic, and image patching still
-run in bf16. On this ViT encoder, those weight-only formats reduce storage and runtime
-weight memory but do not improve throughput.
+There is no supported dequantize-at-load model path. If a bundle expands low-bit weights
+back to dense bf16 before inference, treat it as storage compression only and do not use it
+as a runtime quantized model. The published affine and `mxfp8` artifacts are different:
+they keep weights packed and call `mx.quantized_matmul`, but they are still weight-only
+paths. Activations, attention, layernorm, GELU, residual traffic, and image patching remain
+bf16. On this ViT encoder, those weight-only formats reduce storage and runtime weight
+memory but do not improve throughput.
 
 Cider W8A8 is different: it quantizes activations online and runs int8 weight by int8
 activation kernels on Apple M5+ INT8 TensorOps. That is the first local path here that is
-both genuinely low-bit at runtime and sometimes faster. The gains are still modest rather
-than 10x because C-RADIOv4 is not an LLM decode workload: it has large token matrices,
-attention and normalization remain outside the int8 kernels, and the custom linear kernels
-do not fuse whole transformer blocks. Local 2-bit/4-bit Qwen models feel more dramatic
-because they are often VRAM/bandwidth-bound decoder LLMs with many repeated linear layers
-and inference stacks built specifically around low-bit decode. This repo now supports the
-same principle only where the Apple/MLX kernel layer can actually execute it.
+both genuinely weight/activation low-bit at runtime and sometimes faster. The gains are
+still modest rather than 10x because C-RADIOv4 is not an LLM decode workload: it has large
+token matrices, attention and normalization remain outside the int8 kernels, and the custom
+linear kernels do not fuse whole transformer blocks. Local 2-bit/4-bit Qwen models feel
+more dramatic because decoder LLM serving is often memory-bandwidth-bound, repeatedly
+streams the same large linear weights, and uses inference stacks built specifically around
+low-bit decode. This repo follows the same rule: use low-bit models only where the
+Apple/MLX kernel layer actually consumes low-bit weights during inference.
 
 W4A8 was also tested. It cut bundle and active weight memory further, but it was slower
 end-to-end and failed precision gates, so it is not a supported artifact.
@@ -134,6 +139,22 @@ end-to-end and failed precision gates, so it is not a supported artifact.
 The larger-batch check did not reveal hidden throughput wins for Cider. At 512px batch
 8/16, bf16 remained best for SO400M, while H Cider variants were only roughly comparable.
 For this implementation, batch 1-4 is the useful latency/throughput zone.
+
+SmoothQuant-style Cider calibration was implemented and tested with alpha `0.5` on the 12
+WALDO crop calibration set. It preserves the runtime low-bit contract: weights remain
+packed and Cider still consumes low-bit weights/activations at matmul time. It improves
+precision, but it is not a speed tier because it adds an activation rescale before every
+Cider linear.
+
+| Model | Variant | Summary cosine mean/min | Spatial cosine mean/min | 512px batch-1 p50 |
+| --- | --- | ---: | ---: | ---: |
+| SO400M | Cider g128 + SmoothQuant | 0.999373 / 0.998303 | 0.999501 / 0.998993 | 31.9 ms |
+| SO400M | Cider p99.99 + SmoothQuant | 0.999302 / 0.998743 | 0.999278 / 0.998793 | 30.1 ms |
+| H | Cider g128 + SmoothQuant | 0.999352 / 0.999218 | 0.998830 / 0.998373 | 48.8 ms |
+| H | Cider p99.99 + SmoothQuant | 0.999159 / 0.999066 | 0.998521 / 0.998092 | 49.1 ms |
+
+Compared with the non-SmoothQuant Cider rows, this is a precision recovery option, not a
+throughput improvement. It is therefore not published as a default HF model variant.
 
 ### Quantized Precision
 

@@ -7,7 +7,8 @@ This document tracks the current speedup levers for the MLX C-RADIOv4 runtime.
 1. MLX weight-only quantization is not a throughput path for this model.
    `mx.quantized_matmul` keeps weights packed, but activations and the rest of each
    transformer block remain bf16. It is useful for compact storage and lower runtime
-   weight memory.
+   weight memory. A dequantize-at-load bundle is not useful here and should be treated as
+   storage compression only, not as runtime quantization.
 
 2. Cider W8A8 is the current low-bit runtime path worth using on Apple M5+.
    Cider adds online activation quantization and INT8 TensorOps kernels that MLX does not
@@ -30,6 +31,18 @@ This document tracks the current speedup levers for the MLX C-RADIOv4 runtime.
    for SO400M at 512px large batches. Keep latency-oriented batches around 1-4 unless the
    application can tolerate the queueing delay.
 
+7. Qwen-style 2-bit/4-bit local speedups do not transfer automatically.
+   Decoder LLM inference is usually more weight-bandwidth-bound and has mature low-bit
+   decode paths. C-RADIOv4 image encoding runs large ViT matrix batches plus attention,
+   layernorm, GELU, residual traffic, and image patching. If the low-bit kernel only
+   covers isolated linears, the remaining block cost limits the speedup.
+
+8. SmoothQuant-style Cider calibration improves precision, not speed.
+   Alpha `0.5` calibration on the 12 WALDO crop set raised Cider cosine values, but adds
+   an activation rescale before each Cider linear. SO400M p99.99 moved from 29.8 ms to
+   30.1 ms at `512x512` batch 1; H p99.99 moved from 43.7 ms to 49.1 ms. Keep it as an
+   experiment for downstream precision recovery, not as a throughput artifact.
+
 ## Current Best Modes
 
 | Use case | Mode |
@@ -42,9 +55,8 @@ This document tracks the current speedup levers for the MLX C-RADIOv4 runtime.
 
 ## Remaining Work
 
-- SmoothQuant/AWQ/QuaRot calibration for Cider W8A8/W4A8. Cider explicitly warns that
-  activation-quantized inference needs outlier handling. Calibration on WALDO crops could
-  improve p99.99 or make W4A8 less destructive.
+- AWQ/QuaRot or layer-exclusion calibration for Cider W8A8/W4A8. SmoothQuant alpha `0.5`
+  was tested and improved W8A8 precision, but not speed.
 - ViTDet/windowed attention mode. The C-RADIOv4 report highlights ViTDet for high-resolution
   efficiency, but the current local configs have `vitdet_window_size: null`. A correct MLX
   implementation would need a PyTorch reference run with ViTDet enabled and separate parity

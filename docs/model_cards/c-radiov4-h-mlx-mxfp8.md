@@ -52,7 +52,7 @@ This is lower precision than the 8-bit affine bundle. Treat this as experimental
 
 ## Measured Speed
 
-Packed low-bit runtime, fast-kernel compiled-forward MLX at `512x512`, batch 1:
+Packed weight-only runtime, fast-kernel compiled-forward MLX at `512x512`, batch 1:
 
 | p50 latency | Throughput |
 | ---: | ---: |

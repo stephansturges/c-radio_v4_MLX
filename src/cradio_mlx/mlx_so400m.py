@@ -450,6 +450,7 @@ def _cider_linear(
         pad_width = padded_in_features - x.shape[-1]
         padding = mx.zeros((*x.shape[:-1], pad_width), dtype=x.dtype)
         x = mx.concatenate([x, padding], axis=-1)
+    x = _apply_cider_input_scale(x, weights, prefix)
 
     orig_shape = x.shape
     x_2d = mx.reshape(x, (-1, padded_in_features))
@@ -496,6 +497,7 @@ def _cider_w4a8_linear(
         pad_width = padded_in_features - x.shape[-1]
         padding = mx.zeros((*x.shape[:-1], pad_width), dtype=x.dtype)
         x = mx.concatenate([x, padding], axis=-1)
+    x = _apply_cider_input_scale(x, weights, prefix)
 
     orig_shape = x.shape
     x_2d = mx.reshape(x, (-1, padded_in_features))
@@ -515,6 +517,17 @@ def _assert_cider_available() -> None:
             "This bundle uses cider-w8a8 runtime quantization, but Cider's Apple "
             "M5+ INT8 kernels are not available on this machine."
         )
+
+
+def _apply_cider_input_scale(
+    x: mx.array,
+    weights: dict[str, mx.array],
+    prefix: str,
+) -> mx.array:
+    input_scale = weights.get(f"{prefix}.cider_input_scale")
+    if input_scale is None:
+        return x
+    return x / input_scale.astype(x.dtype)
 
 
 def _layer_norm(x: mx.array, weight: mx.array, bias: mx.array, eps: float = 1e-6) -> mx.array:
@@ -617,6 +630,7 @@ def _should_cast_loaded_weight(key: str) -> bool:
         ".cider_in_features",
         ".cider_padded_in_features",
         ".cider_out_features",
+        ".cider_input_scale",
     )
     if key.endswith(quantized_suffixes):
         return False

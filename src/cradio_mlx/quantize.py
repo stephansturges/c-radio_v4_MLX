@@ -3,6 +3,7 @@ from __future__ import annotations
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 import mlx.core as mx
 
@@ -28,6 +29,7 @@ class QuantizationRequest:
     group_size: int = 64
     mode: str = "affine"
     clip_percentile: float | None = None
+    smooth_scales: Path | None = None
     dry_run: bool = False
 
 
@@ -68,6 +70,8 @@ def validate_quantization(
 
 
 def quantize_bundle(request: QuantizationRequest) -> Path:
+    if request.smooth_scales is not None and request.mode not in {"cider-w8a8", "cider-w4a8"}:
+        raise ValueError("smooth_scales is only supported for Cider runtime quantization modes")
     validate_quantization(
         request.bits,
         request.group_size,
@@ -87,6 +91,7 @@ def quantize_bundle(request: QuantizationRequest) -> Path:
             shutil.copy2(source, request.out / filename)
 
     target_weights = request.out / "model.safetensors"
+    smooth_scales = _load_smooth_scales(request.smooth_scales)
     quantization_stats = quantize_safetensors(
         source_weights,
         target_weights,
@@ -94,6 +99,7 @@ def quantize_bundle(request: QuantizationRequest) -> Path:
         bits=request.bits,
         mode=request.mode,
         clip_percentile=request.clip_percentile,
+        smooth_scales=smooth_scales,
     )
 
     source_files = {
@@ -131,6 +137,8 @@ def quantize_bundle(request: QuantizationRequest) -> Path:
         )
         if request.clip_percentile is not None:
             quantization["clip_percentile"] = request.clip_percentile
+        if request.smooth_scales is not None:
+            quantization["smooth_scales"] = str(request.smooth_scales)
 
     quantized = BundleManifest(
         model_id=source_manifest.model_id,
@@ -160,6 +168,7 @@ def quantize_safetensors(
     bits: int,
     mode: str = "affine",
     clip_percentile: float | None = None,
+    smooth_scales: dict[str, Any] | None = None,
 ) -> dict[str, int]:
     import numpy as np
     from safetensors import safe_open
@@ -171,6 +180,7 @@ def quantize_safetensors(
         "copied_tensors": 0,
         "padded_tensors": 0,
         "padded_features": 0,
+        "smoothed_tensors": 0,
     }
     with safe_open(source, framework="numpy") as handle:
         for key in handle.keys():
@@ -184,6 +194,16 @@ def quantize_safetensors(
                     if pad_features:
                         stats["padded_tensors"] += 1
                         stats["padded_features"] += pad_features
+                    smooth_scale = _smooth_scale_for_prefix(
+                        smooth_scales,
+                        prefix,
+                        original_in_features,
+                        matrix.shape[-1],
+                    )
+                    if smooth_scale is not None:
+                        matrix = matrix * smooth_scale.reshape(1, -1)
+                        tensors[f"{prefix}.cider_input_scale"] = smooth_scale
+                        stats["smoothed_tensors"] += 1
                     if mode == "cider-w8a8":
                         qweight, scales = _quantize_cider_w8a8(
                             matrix,
@@ -286,6 +306,41 @@ def _pad_numpy_matrix(array, group_size: int):
         return array.astype(np.float32), 0
     padding = np.zeros((*array.shape[:-1], pad_features), dtype=array.dtype)
     return np.concatenate([array, padding], axis=-1).astype(np.float32), pad_features
+
+
+def _load_smooth_scales(path: Path | None) -> dict[str, Any] | None:
+    if path is None:
+        return None
+    import numpy as np
+
+    with np.load(path) as handle:
+        return {key: handle[key].astype(np.float32) for key in handle.files}
+
+
+def _smooth_scale_for_prefix(
+    smooth_scales: dict[str, Any] | None,
+    prefix: str,
+    original_in_features: int,
+    padded_in_features: int,
+) -> Any | None:
+    if smooth_scales is None or prefix not in smooth_scales:
+        return None
+    import numpy as np
+
+    scale = np.asarray(smooth_scales[prefix], dtype=np.float32)
+    if scale.shape != (original_in_features,):
+        raise ValueError(
+            f"smooth scale for {prefix!r} has shape {scale.shape}, "
+            f"expected {(original_in_features,)}"
+        )
+    if padded_in_features > original_in_features:
+        scale = np.pad(
+            scale,
+            (0, padded_in_features - original_in_features),
+            mode="constant",
+            constant_values=1.0,
+        )
+    return scale.astype(np.float32)
 
 
 def _quantize_cider_w8a8(

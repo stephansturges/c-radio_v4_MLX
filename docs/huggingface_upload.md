@@ -100,6 +100,14 @@ Uploaded Cider W8A8 g128 and p99.99 runtime bundles:
 - `so400m/cider-w8a8-p9999`: https://huggingface.co/StephanST/C-radiov4_quantized/commit/e526cb59f320cb817e447296553f87d1565196f3
 - `h/cider-w8a8-p9999`: https://huggingface.co/StephanST/C-radiov4_quantized/commit/df33001fde9cff40dd8310a3f0095c69a5221413
 
+Uploaded no-dequantize documentation refresh:
+
+- Root model card: https://huggingface.co/StephanST/C-radiov4_quantized/commit/3b1294ccfbf131028e8b6e1fc23f0b5d60e5cb12
+- `so400m/8bit-affine` card: https://huggingface.co/StephanST/C-radiov4_quantized/commit/630d6d916d53151a3098a2898a09f5e7086c51b8
+- `h/8bit-affine` card: https://huggingface.co/StephanST/C-radiov4_quantized/commit/0cde60dc09470cf0d5f7028e78fe467ed52bde45
+- `so400m/mxfp8` card: https://huggingface.co/StephanST/C-radiov4_quantized/commit/416a771bee83daeaf9311af157b00cbb66538abe
+- `h/mxfp8` card: https://huggingface.co/StephanST/C-radiov4_quantized/commit/367d87b01c0b6ed7c1023b2ca1cb76a16e744de5
+
 The model cards must preserve upstream NVIDIA provenance. The repository code is MIT
 licensed, but the model weights and converted bundles remain governed by the NVIDIA Open
 Model License Agreement:

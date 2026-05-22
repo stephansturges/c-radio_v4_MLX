@@ -46,13 +46,13 @@ Cider W8A8 is reported from the faster of compiled/non-compiled runs for that ce
 | C-RADIOv4-H | Cider W8A8 g128 packed | 48.3 ms | 20.7 images/s |
 | C-RADIOv4-H | Cider W8A8 p99.99 packed | 43.7 ms | 22.9 images/s |
 
-The MLX affine and `mxfp8` bundles are actual packed low-bit runtime bundles, but they are
-weight-only. They reduce bundle size and runtime weight memory while leaving activations
-and the rest of the transformer block in bf16, so they are slower than bf16 on this ViT
-encoder. Cider W8A8 is the useful low-bit runtime path found so far because it uses int8
-weights and online int8 activation quantization on M5+ INT8 kernels. The gain is modest,
-not 10x, because attention, norms, GELU, residual traffic, and custom-kernel dispatch still
-remain outside a fused low-bit transformer block.
+The MLX affine and `mxfp8` bundles are packed weight-only runtime bundles, not
+dequantize-at-load artifacts. They reduce bundle size and runtime weight memory while
+leaving activations and the rest of the transformer block in bf16, so they are slower than
+bf16 on this ViT encoder. Cider W8A8 is the useful weight/activation low-bit runtime path
+found so far because it uses int8 weights and online int8 activation quantization on M5+
+INT8 kernels. The gain is modest, not 10x, because attention, norms, GELU, residual
+traffic, and custom-kernel dispatch still remain outside a fused low-bit transformer block.
 
 Two additional Cider variants were tested:
 
@@ -64,6 +64,19 @@ Two additional Cider variants were tested:
 
 Batch 8/16 did not reveal a hidden throughput tier. At 512px, SO400M bf16 remained faster
 than Cider at larger batches, and H Cider variants were only roughly comparable.
+
+SmoothQuant-style Cider calibration was also tested with alpha `0.5` on the 12 WALDO
+crops. It improved precision but did not improve throughput:
+
+| Model | Bundle | 512px b1 p50 | 256px b4 p50 | 256px b4 throughput |
+| --- | --- | ---: | ---: | ---: |
+| SO400M | Cider g128 + SmoothQuant | 31.9 ms | 27.1 ms | 147.8 images/s |
+| SO400M | Cider p99.99 + SmoothQuant | 30.1 ms | 25.1 ms | 159.6 images/s |
+| H | Cider g128 + SmoothQuant | 48.8 ms | 37.3 ms | 107.1 images/s |
+| H | Cider p99.99 + SmoothQuant | 49.1 ms | 37.2 ms | 107.5 images/s |
+
+The extra activation scaling keeps the model genuinely W8A8 at matmul time, but the cost
+is visible. This is not a replacement for the current Cider throughput variants.
 
 Rejected Cider W4A8 measurements: SO400M `512x512` batch 1 was 42.0 ms and H was 61.2 ms,
 and both failed precision gates. Do not publish W4A8 as supported without calibration or

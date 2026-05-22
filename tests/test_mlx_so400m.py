@@ -1,6 +1,7 @@
 import numpy as np
 
 from cradio_mlx.mlx_so400m import (
+    _apply_cider_input_scale,
     _im2patches,
     _resize_pos_embed_align_corners_false,
 )
@@ -22,3 +23,16 @@ def test_resize_pos_embed_preserves_requested_shape():
     resized = _resize_pos_embed_align_corners_false(pos, 2, 3)
 
     assert resized.shape == (1, 2, 3, 2)
+
+
+def test_apply_cider_input_scale_divides_last_dimension():
+    import mlx.core as mx
+
+    x = mx.array([[[2.0, 6.0, 12.0]]], dtype=mx.float32)
+    out = _apply_cider_input_scale(
+        x,
+        {"layer.cider_input_scale": mx.array([2.0, 3.0, 4.0], dtype=mx.float32)},
+        "layer",
+    )
+
+    assert np.asarray(out).tolist() == [[[1.0, 2.0, 3.0]]]

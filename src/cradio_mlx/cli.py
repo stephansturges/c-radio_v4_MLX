@@ -69,6 +69,7 @@ def build_parser() -> argparse.ArgumentParser:
     quantize.add_argument("--group-size", type=int, default=64)
     quantize.add_argument("--mode", default="affine")
     quantize.add_argument("--clip-percentile", type=float)
+    quantize.add_argument("--smooth-scales", type=Path)
     quantize.add_argument("--dry-run", action="store_true")
 
     pytorch = subparsers.add_parser("pytorch-ref", help="Run the PyTorch reference backend.")
@@ -206,6 +207,7 @@ def main(argv: list[str] | None = None) -> int:
                 group_size=args.group_size,
                 mode=args.mode,
                 clip_percentile=args.clip_percentile,
+                smooth_scales=args.smooth_scales,
                 dry_run=args.dry_run,
             )
         )

@@ -19,6 +19,7 @@ Implemented:
 - `affine`, `mxfp8`, `mxfp4`, and `nvfp4` safetensors layouts
 - optional Cider W8A8 safetensors layout with int8 weights and online int8 activation
   quantization through Cider's M5+ MLX kernels
+- optional SmoothQuant-style Cider input scales for calibration experiments
 - zero-padding for SO400M linear dimensions that are not divisible by the group size
 - self-contained quantized bundles with `qweight`, `qscales`, optional `qbiases`, mode
   metadata, and manifest stats
@@ -102,6 +103,29 @@ cradio-mlx quantize \
   --clip-percentile 99.99
 ```
 
+Build an experimental SmoothQuant Cider variant by collecting activation scales first:
+
+```sh
+python scripts/calibrate_smooth_scales.py \
+  --checkpoint bundles/c-radiov4-so400m-bf16 \
+  --variant so400m \
+  --images reports/local_waldo_crops/*.jpg \
+  --image-size 512 \
+  --batch-size 4 \
+  --alpha 0.5 \
+  --out reports/experiments/so400m-smooth-scales-waldo512-a05.npz \
+  --report reports/experiments/so400m-smooth-scales-waldo512-a05.json
+
+cradio-mlx quantize \
+  --model bundles/c-radiov4-so400m-bf16 \
+  --out bundles/experiments/c-radiov4-so400m-cider-w8a8-p9999-sq-a05 \
+  --bits 8 \
+  --group-size 0 \
+  --mode cider-w8a8 \
+  --clip-percentile 99.99 \
+  --smooth-scales reports/experiments/so400m-smooth-scales-waldo512-a05.npz
+```
+
 Current 512px precision versus bf16 on 12 WALDO crops:
 
 | Model | Format | Summary cosine mean/min | Spatial cosine mean/min |
@@ -126,6 +150,16 @@ WALDO 12-image Cider W8A8 precision versus bf16 at `512x512`:
 | C-RADIOv4-SO400M | p99.99 | 0.998638 / 0.998112 | 0.999240 / 0.998586 |
 | C-RADIOv4-H | g128 | 0.997935 / 0.997436 | 0.997821 / 0.996704 |
 | C-RADIOv4-H | p99.99 | 0.997642 / 0.996978 | 0.997628 / 0.996634 |
+
+SmoothQuant alpha `0.5` improved Cider W8A8 precision on the same 12 WALDO crops, but
+added runtime scaling overhead and did not improve speed:
+
+| Model | Variant | Summary cosine mean/min | Spatial cosine mean/min | 512px batch-1 p50 |
+| --- | --- | ---: | ---: | ---: |
+| C-RADIOv4-SO400M | g128 + SmoothQuant | 0.999373 / 0.998303 | 0.999501 / 0.998993 | 31.9 ms |
+| C-RADIOv4-SO400M | p99.99 + SmoothQuant | 0.999302 / 0.998743 | 0.999278 / 0.998793 | 30.1 ms |
+| C-RADIOv4-H | g128 + SmoothQuant | 0.999352 / 0.999218 | 0.998830 / 0.998373 | 48.8 ms |
+| C-RADIOv4-H | p99.99 + SmoothQuant | 0.999159 / 0.999066 | 0.998521 / 0.998092 | 49.1 ms |
 
 Cider W4A8 was tested but is not supported. It reduced SO400M/H bundles to 271 MB /
 384 MB, but failed smoke precision at `256x256` with SO400M summary/spatial cosine
