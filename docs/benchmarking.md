@@ -33,16 +33,16 @@ Local `512x512`, batch-1, fast-kernel compiled-forward results on Apple Silicon:
 | Model | Bundle | p50 latency | Throughput |
 | --- | --- | ---: | ---: |
 | C-RADIOv4-SO400M | bf16 | 32.4 ms | 30.9 images/s |
-| C-RADIOv4-SO400M | 8-bit affine | 51.6 ms | 19.4 images/s |
-| C-RADIOv4-SO400M | mxfp8 | 62.5 ms | 16.0 images/s |
-| C-RADIOv4-H | bf16 | 51.9 ms | 19.3 images/s |
-| C-RADIOv4-H | 8-bit affine | 73.2 ms | 13.7 images/s |
-| C-RADIOv4-H | mxfp8 | 63.5 ms | 15.8 images/s |
+| C-RADIOv4-SO400M | 8-bit affine packed | 47.1 ms | 21.2 images/s |
+| C-RADIOv4-SO400M | mxfp8 packed | 49.8 ms | 20.1 images/s |
+| C-RADIOv4-H | bf16 | 45.6 ms | 22.0 images/s |
+| C-RADIOv4-H | 8-bit affine packed | 58.8 ms | 17.0 images/s |
+| C-RADIOv4-H | mxfp8 packed | 52.6 ms | 19.0 images/s |
 
-8-bit affine currently reduces bundle size and preserves precision but is slower than
-bf16 on MLX GPU. Weight-only `mxfp8` is also slower than bf16 and materially lower
-precision for this model. Use fast-kernel compiled bf16 for latency-sensitive local
-inference.
+The quantized bundles are actual packed low-bit runtime bundles. They reduce bundle size
+and runtime weight memory, but they are slower than bf16 on MLX GPU for this ViT encoder.
+Weight-only `mxfp8` is also materially lower precision. Use fast-kernel compiled bf16 for
+latency-sensitive local inference when the model fits.
 
 ## Remaining Speed Levers Checked
 

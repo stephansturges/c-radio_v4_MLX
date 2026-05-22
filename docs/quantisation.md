@@ -21,6 +21,10 @@ Implemented:
   metadata, and manifest stats
 - quantized runtime loading through `mx.quantized_matmul`
 
+The runtime path keeps quantized weights packed. There is no dequantize-at-load production
+mode in this repo; if weights are expanded back to bf16, the result is not a low-bit
+runtime model.
+
 Build both local 8-bit bundles with:
 
 ```sh
@@ -73,6 +77,16 @@ Current bundle sizes:
 | C-RADIOv4-SO400M | 1.6 GB | 517 MB | 479 MB |
 | C-RADIOv4-H | 2.4 GB | 758 MB | 702 MB |
 
+Current packed-runtime `512x512`, batch-1 speed:
+
+| Model | Format | p50 latency | Throughput |
+| --- | --- | ---: | ---: |
+| C-RADIOv4-SO400M | bf16 | 32.4 ms | 30.9 images/s |
+| C-RADIOv4-SO400M | 8-bit affine packed | 47.1 ms | 21.2 images/s |
+| C-RADIOv4-H | bf16 | 45.6 ms | 22.0 images/s |
+| C-RADIOv4-H | 8-bit affine packed | 58.8 ms | 17.0 images/s |
+
 `mxfp4` and `nvfp4` smoke checks did not pass precision gates. Keep bf16 as the
-performance tier, 8-bit affine as the compact high-precision tier, and `mxfp8` as
-experimental unless future MLX kernels or calibration change these results.
+performance tier, 8-bit affine as the compact high-precision/low-runtime-weight-memory
+tier, and `mxfp8` as experimental unless future MLX kernels or calibration change these
+results.

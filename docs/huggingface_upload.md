@@ -57,6 +57,14 @@ Uploaded commits:
 - `so400m/mxfp8`: https://huggingface.co/StephanST/C-radiov4_quantized/commit/2d7d1174c7e09c64fc77d25df40bd010a41df5e8
 - `h/mxfp8`: https://huggingface.co/StephanST/C-radiov4_quantized/commit/8bf68bec75ecb24ef1ef9e12457d228ff3b20944
 
+Uploaded packed-runtime documentation refresh:
+
+- Root model card: https://huggingface.co/StephanST/C-radiov4_quantized/commit/ce1c84b371c783c1497e357e8a462d62c208bec2
+- `so400m/8bit-affine`: https://huggingface.co/StephanST/C-radiov4_quantized/commit/2508229e8e60e7b346f010be208abd971fc8e02b
+- `h/8bit-affine`: https://huggingface.co/StephanST/C-radiov4_quantized/commit/029a4fb3ea51495a685939ea75da31a0b5b254e6
+- `so400m/mxfp8`: https://huggingface.co/StephanST/C-radiov4_quantized/commit/87a03f5353acf256eea8058efda472cfb3350405
+- `h/mxfp8`: https://huggingface.co/StephanST/C-radiov4_quantized/commit/ae3a673d621eb7cb98a3b6e3f3b0a0f07ecccc6e
+
 The model cards must preserve upstream NVIDIA provenance. The repository code is MIT
 licensed, but the model weights and converted bundles remain governed by the NVIDIA Open
 Model License Agreement:

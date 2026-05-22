@@ -67,13 +67,14 @@ Fast-kernel compiled-forward MLX measurements on Apple Silicon at `512x512`, bat
 
 | Bundle | p50 latency | Throughput |
 | --- | ---: | ---: |
-| `so400m/8bit-affine` | 51.6 ms | 19.4 images/s |
-| `h/8bit-affine` | 73.2 ms | 13.7 images/s |
-| `so400m/mxfp8` | 62.5 ms | 16.0 images/s |
-| `h/mxfp8` | 63.5 ms | 15.8 images/s |
+| `so400m/8bit-affine` | 47.1 ms | 21.2 images/s |
+| `h/8bit-affine` | 58.8 ms | 17.0 images/s |
+| `so400m/mxfp8` | 49.8 ms | 20.1 images/s |
+| `h/mxfp8` | 52.6 ms | 19.0 images/s |
 
-For latency-sensitive inference, the bf16 bundles in the implementation repo remain faster
-than the quantized formats. These quantized bundles prioritize compact storage.
+These are packed low-bit runtime measurements. The quantized bundles prioritize compact
+storage and lower runtime weight memory. For latency-sensitive inference, the bf16 bundles
+in the implementation repo remain faster when they fit.
 
 ## Usage
 

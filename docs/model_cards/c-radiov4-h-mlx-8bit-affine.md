@@ -54,6 +54,17 @@ Smoke-image 8-bit versus bf16 at `512x512`:
 | Summary | 0.999886 |
 | Spatial | 0.999615 |
 
+## Measured Speed
+
+Packed low-bit runtime, fast-kernel compiled-forward MLX at `512x512`, batch 1:
+
+| p50 latency | Throughput |
+| ---: | ---: |
+| 58.8 ms | 17.0 images/s |
+
+The bf16 H bundle is faster on this workload when it fits. This bundle is for compact
+storage and lower runtime weight memory.
+
 ## Usage
 
 ```sh

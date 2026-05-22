@@ -71,22 +71,22 @@ Local benchmark environment:
 | Model | Artifact | p50 latency | Throughput | Notes |
 | --- | --- | ---: | ---: | --- |
 | C-RADIOv4-SO400M | bf16 | 32.4 ms | 30.9 images/s | best speed path at same output contract |
-| C-RADIOv4-SO400M | HF `so400m/8bit-affine` | 51.6 ms | 19.4 images/s | compact/high-precision tier |
-| C-RADIOv4-SO400M | HF `so400m/mxfp8` | 62.5 ms | 16.0 images/s | experimental; lower precision |
-| C-RADIOv4-H | bf16 | 51.9 ms | 19.3 images/s | best speed path at same output contract |
-| C-RADIOv4-H | HF `h/8bit-affine` | 73.2 ms | 13.7 images/s | compact/high-precision tier |
-| C-RADIOv4-H | HF `h/mxfp8` | 63.5 ms | 15.8 images/s | experimental; lower precision |
+| C-RADIOv4-SO400M | HF `so400m/8bit-affine` | 47.1 ms | 21.2 images/s | packed low-bit runtime; compact/high-precision |
+| C-RADIOv4-SO400M | HF `so400m/mxfp8` | 49.8 ms | 20.1 images/s | packed low-bit runtime; experimental/lower precision |
+| C-RADIOv4-H | bf16 | 45.6 ms | 22.0 images/s | best speed path at same output contract |
+| C-RADIOv4-H | HF `h/8bit-affine` | 58.8 ms | 17.0 images/s | packed low-bit runtime; compact/high-precision |
+| C-RADIOv4-H | HF `h/mxfp8` | 52.6 ms | 19.0 images/s | packed low-bit runtime; experimental/lower precision |
 
 ### Best Matrix Throughput
 
 | Model | Artifact | Resolution | Batch | p50 batch latency | Throughput |
 | --- | --- | ---: | ---: | ---: | ---: |
-| C-RADIOv4-SO400M | bf16 | 256 | 4 | 27.2 ms | 146.9 images/s |
-| C-RADIOv4-SO400M | HF `so400m/8bit-affine` | 256 | 4 | 39.4 ms | 101.4 images/s |
-| C-RADIOv4-SO400M | HF `so400m/mxfp8` | 256 | 4 | 58.7 ms | 68.2 images/s |
-| C-RADIOv4-H | bf16 | 256 | 4 | 39.5 ms | 101.4 images/s |
-| C-RADIOv4-H | HF `h/8bit-affine` | 256 | 4 | 56.7 ms | 70.5 images/s |
-| C-RADIOv4-H | HF `h/mxfp8` | 256 | 4 | 50.1 ms | 79.9 images/s |
+| C-RADIOv4-SO400M | bf16 | 256 | 4 | 27.2 ms | 146.8 images/s |
+| C-RADIOv4-SO400M | HF `so400m/8bit-affine` | 256 | 4 | 34.9 ms | 114.5 images/s |
+| C-RADIOv4-SO400M | HF `so400m/mxfp8` | 256 | 4 | 45.3 ms | 88.3 images/s |
+| C-RADIOv4-H | bf16 | 256 | 4 | 35.3 ms | 113.4 images/s |
+| C-RADIOv4-H | HF `h/8bit-affine` | 256 | 4 | 47.4 ms | 84.3 images/s |
+| C-RADIOv4-H | HF `h/mxfp8` | 256 | 4 | 37.9 ms | 105.6 images/s |
 
 MLX `0.31.2` is installed and current. Its newer `mxfp8`/`nvfp4` path is available, and
 `quantize_input=True` is documented only for `mxfp8` and `nvfp4` linear layers. For this
@@ -95,17 +95,18 @@ ViT workload, weight-only `mxfp8` was smaller but lower precision and slower tha
 came from MLX fast attention/layernorm plus compilation, not from the quantized matmul
 formats.
 
-The quantized HF artifacts improve storage size, not end-to-end throughput. C-RADIOv4 is a
-dense ViT encoder: attention, layernorm, GELU, residual traffic, image patching, and
-activation movement remain in bf16 even when linear weights are packed. At these 512px
-batch-1 and small-batch shapes, Apple GPU bf16 dense matmul is already highly optimized,
-while weight-only quantized matmul adds per-group scale/bias handling and cannot fuse away
-the rest of the transformer block. The result is smaller bundles and high precision for
-8-bit affine, but not "super-duper" throughput gains. Throughput improves most from
-compiled bf16, fused attention/layernorm, lower resolution, and batching.
+The quantized HF artifacts run packed low-bit weights at runtime. They improve storage size
+and runtime weight memory, not end-to-end throughput. C-RADIOv4 is a dense ViT encoder:
+attention, layernorm, GELU, residual traffic, image patching, and activation movement remain
+in bf16 even when linear weights are packed. At these 512px batch-1 and small-batch shapes,
+Apple GPU bf16 dense matmul is already highly optimized, while weight-only quantized matmul
+adds per-group scale/bias handling and cannot fuse away the rest of the transformer block.
+If the goal is fastest local inference and the bf16 model fits, the quantized bundles are
+not the right runtime tier today. Keep them only when compact storage or lower runtime
+weight memory matters.
 
 The current 10x-class speed lever is workload-level: compiled bf16 plus lower resolution
-and batching gives SO400M about 6.9 ms per image at 256px batch 4, versus the earlier
+and batching gives SO400M about 6.8 ms per image at 256px batch 4, versus the earlier
 PyTorch/MPS 512px batch-1 baseline of 120 ms. At the same 512px batch-1 contract, no
 honest 10x speedup was found; bf16 remains the fastest measured mode.
 

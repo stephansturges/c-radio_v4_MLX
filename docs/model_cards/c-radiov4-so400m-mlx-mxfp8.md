@@ -50,6 +50,17 @@ Against the local bf16 MLX bundle at `512x512` on 12 WALDO crop images:
 
 This is lower precision than the 8-bit affine bundle. Treat this as experimental.
 
+## Measured Speed
+
+Packed low-bit runtime, fast-kernel compiled-forward MLX at `512x512`, batch 1:
+
+| p50 latency | Throughput |
+| ---: | ---: |
+| 49.8 ms | 20.1 images/s |
+
+The bf16 SO400M bundle is faster on this workload when it fits. This bundle is experimental
+and lower precision than 8-bit affine.
+
 ## Usage
 
 ```sh
