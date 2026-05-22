@@ -2,8 +2,11 @@ import numpy as np
 
 from cradio_mlx.mlx_so400m import (
     _apply_cider_input_scale,
+    _assert_cider_available,
+    _fused_cider_layer_norm_linear,
     _im2patches,
     _resize_pos_embed_align_corners_false,
+    _validate_cider_fusion_mode,
 )
 
 
@@ -36,3 +39,102 @@ def test_apply_cider_input_scale_divides_last_dimension():
     )
 
     assert np.asarray(out).tolist() == [[[1.0, 2.0, 3.0]]]
+
+
+def test_validate_cider_fusion_mode_rejects_unknown():
+    import pytest
+
+    assert _validate_cider_fusion_mode("auto") == "auto"
+    with pytest.raises(ValueError, match="unsupported cider_fusion"):
+        _validate_cider_fusion_mode("maybe")
+
+
+def test_fused_cider_layer_norm_linear_auto_falls_back_when_op_missing(monkeypatch):
+    import types
+
+    import mlx.core as mx
+
+    fake_ops = types.SimpleNamespace()
+    fake_cider = types.SimpleNamespace(ops=fake_ops, is_available=lambda: True)
+    monkeypatch.setitem(__import__("sys").modules, "cider", fake_cider)
+    monkeypatch.setitem(__import__("sys").modules, "cider.ops", fake_ops)
+    _assert_cider_available.cache_clear()
+
+    out = _fused_cider_layer_norm_linear(
+        mx.zeros((1, 2, 4), dtype=mx.float16),
+        {
+            "layer.cider_weight": mx.zeros((3, 4), dtype=mx.int8),
+            "layer.cider_scale": mx.ones((3,), dtype=mx.float32),
+            "layer.cider_group_size": mx.array([0], dtype=mx.int32),
+        },
+        "layer",
+        mx.ones((4,), dtype=mx.float16),
+        mx.zeros((4,), dtype=mx.float16),
+        cider_fusion="auto",
+    )
+
+    assert out is None
+    _assert_cider_available.cache_clear()
+
+
+def test_fused_cider_layer_norm_linear_required_needs_fused_cider(monkeypatch):
+    import types
+
+    import mlx.core as mx
+    import pytest
+
+    fake_ops = types.SimpleNamespace()
+    fake_cider = types.SimpleNamespace(ops=fake_ops, is_available=lambda: True)
+    monkeypatch.setitem(__import__("sys").modules, "cider", fake_cider)
+    monkeypatch.setitem(__import__("sys").modules, "cider.ops", fake_ops)
+    _assert_cider_available.cache_clear()
+
+    with pytest.raises(RuntimeError, match="Cider fusion is required"):
+        _fused_cider_layer_norm_linear(
+            mx.zeros((1, 2, 4), dtype=mx.float16),
+            {
+                "layer.cider_weight": mx.zeros((3, 4), dtype=mx.int8),
+                "layer.cider_scale": mx.ones((3,), dtype=mx.float32),
+                "layer.cider_group_size": mx.array([0], dtype=mx.int32),
+            },
+            "layer",
+            mx.ones((4,), dtype=mx.float16),
+            mx.zeros((4,), dtype=mx.float16),
+            cider_fusion="required",
+        )
+    _assert_cider_available.cache_clear()
+
+
+def test_fused_cider_layer_norm_linear_calls_ops_wrapper(monkeypatch):
+    import types
+
+    import mlx.core as mx
+
+    calls = {}
+
+    def layernorm_perchannel_linear(x, norm_weight, norm_bias, weight, scale, bias, eps):
+        calls["args"] = (x, norm_weight, norm_bias, weight, scale, bias, eps)
+        return mx.ones((2, 3), dtype=mx.float16)
+
+    fake_ops = types.SimpleNamespace(layernorm_perchannel_linear=layernorm_perchannel_linear)
+    fake_cider = types.SimpleNamespace(ops=fake_ops, is_available=lambda: True)
+    monkeypatch.setitem(__import__("sys").modules, "cider", fake_cider)
+    monkeypatch.setitem(__import__("sys").modules, "cider.ops", fake_ops)
+    _assert_cider_available.cache_clear()
+
+    out = _fused_cider_layer_norm_linear(
+        mx.zeros((1, 2, 4), dtype=mx.float16),
+        {
+            "layer.cider_weight": mx.zeros((3, 4), dtype=mx.int8),
+            "layer.cider_scale": mx.ones((3,), dtype=mx.float32),
+            "layer.cider_group_size": mx.array([0], dtype=mx.int32),
+        },
+        "layer",
+        mx.ones((4,), dtype=mx.float16),
+        mx.zeros((4,), dtype=mx.float16),
+        cider_fusion="required",
+    )
+
+    assert out.shape == (1, 2, 3)
+    assert calls["args"][-1] == 1e-6
+    _assert_cider_available.cache_clear()

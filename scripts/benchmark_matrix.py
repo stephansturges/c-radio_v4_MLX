@@ -73,6 +73,7 @@ def main() -> int:
     parser.add_argument("--repeats", type=int, default=5)
     parser.add_argument("--no-materialize", action="store_true")
     parser.add_argument("--compile", action="store_true")
+    parser.add_argument("--cider-fusion", choices=["off", "auto", "required"], default="off")
     parser.add_argument("--out-dir", type=Path, default=Path("reports/benchmark_matrix"))
     parser.add_argument("--summary", type=Path, default=Path("reports/benchmark-matrix.json"))
     args = parser.parse_args()
@@ -149,6 +150,7 @@ def main() -> int:
             continue
 
         report_path = args.out_dir / f"{case.label}.json"
+        cider_fusion = args.cider_fusion if case.quantization.startswith("cider") else "off"
         write_mlx_so400m_benchmark(
             MLXSO400MBenchmarkRequest(
                 checkpoint=case.checkpoint,
@@ -162,6 +164,7 @@ def main() -> int:
                 repeats=args.repeats,
                 materialize_outputs=not args.no_materialize,
                 compile_forward=args.compile,
+                cider_fusion=cider_fusion,
             )
         )
         report = json.loads(report_path.read_text(encoding="utf-8"))
@@ -175,6 +178,7 @@ def main() -> int:
                     "dtype": case.dtype,
                     "materialize_outputs": report["materialize_outputs"],
                     "compile_forward": report["compile_forward"],
+                    "cider_fusion": report["cider_fusion"],
                     "report": str(report_path),
                     **row,
                 }

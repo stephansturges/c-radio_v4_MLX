@@ -91,6 +91,7 @@ def build_parser() -> argparse.ArgumentParser:
     embed.add_argument("--dtype", default="bfloat16")
     embed.add_argument("--device", default="auto")
     embed.add_argument("--compile", action="store_true")
+    embed.add_argument("--cider-fusion", choices=["off", "auto", "required"], default="off")
     embed.add_argument("--save-npz", type=Path)
 
     capture = subparsers.add_parser(
@@ -153,6 +154,7 @@ def build_parser() -> argparse.ArgumentParser:
     mlx_bench.add_argument("--repeats", type=int, default=3)
     mlx_bench.add_argument("--no-materialize", action="store_true")
     mlx_bench.add_argument("--compile", action="store_true")
+    mlx_bench.add_argument("--cider-fusion", choices=["off", "auto", "required"], default="off")
     mlx_bench.add_argument("--report", required=True, type=Path)
 
     return parser
@@ -247,6 +249,7 @@ def main(argv: list[str] | None = None) -> int:
                 dtype=args.dtype,
                 revision=args.revision,
                 compile_forward=args.compile,
+                cider_fusion=args.cider_fusion,
             ).encode_image(args.image, image_size=_image_size(args.image_size))
         else:
             result = CRadioEncoder.from_pretrained(
@@ -339,6 +342,7 @@ def main(argv: list[str] | None = None) -> int:
                 repeats=args.repeats,
                 materialize_outputs=not args.no_materialize,
                 compile_forward=args.compile,
+                cider_fusion=args.cider_fusion,
                 report=args.report,
             )
         )

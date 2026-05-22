@@ -48,6 +48,13 @@ This document tracks the current speedup levers for the MLX C-RADIOv4 runtime.
    underlying `mx.qqmm` path raises `RuntimeError: [QQMatmul] NYI for the general case`
    on C-RADIOv4 token matrices. Revisit this when MLX implements the general case.
 
+10. Fused Cider LayerNorm + W8A8 linear works, but only moves the needle slightly.
+    The repo includes `cider_patches/0001-layernorm-w8a8-linear.patch`, which adds
+    `cider.ops.layernorm_perchannel_linear(...)`. On SO400M p99.99 it improved 512px
+    batch-1 from 32.32 ms to 31.69 ms without compile and from 29.65 ms to 29.17 ms with
+    compile. H was neutral. This confirms that custom Metal fusion helps, but also that
+    the unfused remainder of the transformer block is now the limiting cost.
+
 ## Current Best Modes
 
 | Use case | Mode |
@@ -68,9 +75,12 @@ This document tracks the current speedup levers for the MLX C-RADIOv4 runtime.
   efficiency, but the current local configs have `vitdet_window_size: null`. A correct MLX
   implementation would need a PyTorch reference run with ViTDet enabled and separate parity
   gates because it changes the attention pattern.
-- Fused custom Metal blocks. The plausible kernels are layernorm+linear, linear+bias+GELU,
-  and MLP fusion. They are materially harder than using Cider linears and should only be
-  pursued after profiling shows the target block dominates.
+- Broader fused custom Metal blocks. The first Cider fusion target,
+  `layernorm -> W8A8 linear`, is implemented as a patch and wired behind
+  `--cider-fusion auto|required`. The next plausible kernels are fc1-dequant + GELU +
+  fc2 activation quantization, or a larger MLP fusion. Those are materially harder because
+  they need to preserve precision across the expanded hidden dimension and interact with
+  Cider's existing GEMM kernels.
 - Runtime integration with a crop queue. If Tator can batch independent crops, use benchmark
   data to choose a batch size per model/resolution rather than assuming one universal batch.
 

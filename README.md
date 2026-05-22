@@ -133,6 +133,17 @@ streams the same large linear weights, and uses inference stacks built specifica
 low-bit decode. This repo follows the same rule: use low-bit models only where the
 Apple/MLX kernel layer actually consumes low-bit weights during inference.
 
+An experimental Cider patch is included at
+`cider_patches/0001-layernorm-w8a8-linear.patch`. It adds a native
+`layernorm -> W8A8 linear` Metal primitive for the p99.99 Cider bundles and is enabled
+with `--cider-fusion auto|required`. On SO400M p99.99, the patched path moved 512px
+batch-1 from 32.32 ms to 31.69 ms without compile, and from 29.65 ms to 29.17 ms with
+compile. H was effectively neutral. This is useful evidence, but not a new headline speed
+tier: it only fuses `norm1 -> attn.qkv` and `norm2 -> mlp.fc1`, while attention, GELU,
+second MLP projections, residual traffic, and image patching still remain outside the
+custom kernel. Smoke fused-vs-unfused cosine at 512px was 0.998747/0.998902 for SO400M
+summary/spatial and 0.998525/0.996893 for H, so it remains experimental.
+
 W4A8 was also tested. It cut bundle and active weight memory further, but it was slower
 end-to-end and failed precision gates, so it is not a supported artifact.
 
@@ -251,6 +262,11 @@ cradio-mlx embed \
 
 The first call pays MLX compilation overhead for that input shape; repeated calls at the
 same resolution are the intended use.
+
+For Cider fusion experiments, use `--cider-fusion auto` to opt into a Cider fork that
+provides fused `layernorm -> W8A8 linear` ops while keeping the current path as fallback.
+Use `--cider-fusion required` in benchmark jobs when absence of the native fused op should
+fail fast.
 
 ## Download Checkpoints
 

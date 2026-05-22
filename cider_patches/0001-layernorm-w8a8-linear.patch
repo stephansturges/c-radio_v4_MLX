@@ -1,0 +1,402 @@
+diff --git a/cider/kernels/layernorm_quantize.metal b/cider/kernels/layernorm_quantize.metal
+new file mode 100644
+index 0000000..29d96eb
+--- /dev/null
++++ b/cider/kernels/layernorm_quantize.metal
+@@ -0,0 +1,121 @@
++// ============================================================
++// Fused LayerNorm + per-token quantization: FP16 -> INT8 + scale
++// Target: Apple M5, Metal 4
++//
++// Each threadgroup handles one row. Threads reduce mean/variance,
++// apply affine LayerNorm, reduce absmax, and quantize to INT8.
++// ============================================================
++
++#include <metal_stdlib>
++using namespace metal;
++
++kernel void layernorm_quantize_per_token(
++    const device half *X [[buffer(0)]],        // [M, K] FP16 input
++    const device half *gamma [[buffer(1)]],    // [K] LayerNorm weight
++    const device half *beta [[buffer(2)]],     // [K] LayerNorm bias
++    device int8_t *A [[buffer(3)]],            // [M, K] INT8 output
++    device float *scale [[buffer(4)]],         // [M] activation scale
++    constant uint &M [[buffer(5)]],
++    constant uint &K [[buffer(6)]],
++    constant float &eps [[buffer(7)]],
++    uint gid [[threadgroup_position_in_grid]],
++    uint lid [[thread_index_in_threadgroup]],
++    uint tg_size [[threads_per_threadgroup]]) {
++  if (gid >= M) {
++    return;
++  }
++
++  const device half *row_in = X + gid * K;
++  device int8_t *row_out = A + gid * K;
++
++  uint sg_id = lid / 32;
++  uint sg_lid = lid % 32;
++  uint num_sgs = (tg_size + 31) / 32;
++
++  threadgroup float sg_sums[8];
++  threadgroup float sg_sumsq[8];
++  threadgroup float sg_maxes[8];
++  threadgroup float shared_mean;
++  threadgroup float shared_inv_std;
++  threadgroup float shared_scale;
++  threadgroup float shared_inv_scale;
++
++  float local_sum = 0.0f;
++  float local_sumsq = 0.0f;
++  for (uint i = lid; i < K; i += tg_size) {
++    float v = float(row_in[i]);
++    local_sum += v;
++    local_sumsq += v * v;
++  }
++
++  float lane_sum = simd_sum(local_sum);
++  float lane_sumsq = simd_sum(local_sumsq);
++  if (sg_lid == 0) {
++    sg_sums[sg_id] = lane_sum;
++    sg_sumsq[sg_id] = lane_sumsq;
++  }
++  threadgroup_barrier(mem_flags::mem_threadgroup);
++
++  if (sg_id == 0) {
++    float total_sum = 0.0f;
++    float total_sumsq = 0.0f;
++    if (sg_lid < num_sgs) {
++      total_sum = sg_sums[sg_lid];
++      total_sumsq = sg_sumsq[sg_lid];
++    }
++    total_sum = simd_sum(total_sum);
++    total_sumsq = simd_sum(total_sumsq);
++
++    if (sg_lid == 0) {
++      float inv_k = 1.0f / float(K);
++      float mean = total_sum * inv_k;
++      float variance = max(total_sumsq * inv_k - mean * mean, 0.0f);
++      shared_mean = mean;
++      shared_inv_std = rsqrt(variance + eps);
++    }
++  }
++  threadgroup_barrier(mem_flags::mem_threadgroup);
++
++  float mean = shared_mean;
++  float inv_std = shared_inv_std;
++
++  float local_max = 0.0f;
++  for (uint i = lid; i < K; i += tg_size) {
++    float normalized =
++        (float(row_in[i]) - mean) * inv_std * float(gamma[i]) + float(beta[i]);
++    local_max = max(local_max, abs(normalized));
++  }
++
++  float lane_max = simd_max(local_max);
++  if (sg_lid == 0) {
++    sg_maxes[sg_id] = lane_max;
++  }
++  threadgroup_barrier(mem_flags::mem_threadgroup);
++
++  if (sg_id == 0) {
++    float row_max = 0.0f;
++    if (sg_lid < num_sgs) {
++      row_max = sg_maxes[sg_lid];
++    }
++    row_max = simd_max(row_max);
++
++    if (sg_lid == 0) {
++      float s = row_max / 127.0f;
++      if (s == 0.0f) {
++        s = 1.0f;
++      }
++      shared_scale = s;
++      shared_inv_scale = 1.0f / s;
++      scale[gid] = s;
++    }
++  }
++  threadgroup_barrier(mem_flags::mem_threadgroup);
++
++  float inv_s = shared_inv_scale;
++  for (uint i = lid; i < K; i += tg_size) {
++    float normalized =
++        (float(row_in[i]) - mean) * inv_std * float(gamma[i]) + float(beta[i]);
++    float q = clamp(round(normalized * inv_s), -128.0f, 127.0f);
++    row_out[i] = int8_t(q);
++  }
++}
+diff --git a/cider/ops.py b/cider/ops.py
+index c34d407..7f8134d 100644
+--- a/cider/ops.py
++++ b/cider/ops.py
+@@ -161,2 +161,40 @@ def perchannel_linear(
+ 
++def layernorm_perchannel_linear(
++    x: mx.array,
++    norm_weight: mx.array,
++    norm_bias: mx.array,
++    w: mx.array,
++    scale_w: mx.array,
++    bias: Optional[mx.array] = None,
++    eps: float = 1e-6,
++    stream: Optional[mx.Stream] = None,
++) -> mx.array:
++    """Fused LayerNorm + W8A8 per-channel quantized linear.
++
++    Computes ``perchannel_linear(layer_norm(x, norm_weight, norm_bias), ...)``
++    with the layernorm and activation quantization fused into one Metal kernel.
++    The result should be used for prefill-style 2D inputs [M, K].
++    """
++    ext = _load_ext()
++    out_dtype = x.dtype
++    kw = {"stream": stream} if stream is not None else {}
++    N = w.shape[0]
++    if bias is None:
++        bias = mx.zeros((N,), dtype=mx.float16)
++    result = ext.layernorm_perchannel_linear(
++        x,
++        norm_weight,
++        norm_bias,
++        w,
++        scale_w,
++        bias,
++        float(eps),
++        kernel_dir(),
++        **kw,
++    )
++    if out_dtype != mx.float16:
++        result = result.astype(out_dtype, **kw)
++    return result
++
++
+ # Shared placeholder for new_bias (V5 kernel ignores it; Metal needs valid buffer)
+diff --git a/csrc/include/w8a8_primitive.h b/csrc/include/w8a8_primitive.h
+index 24d933e..eefdae7 100644
+--- a/csrc/include/w8a8_primitive.h
++++ b/csrc/include/w8a8_primitive.h
+@@ -53,2 +53,38 @@ class W8A8Linear : public mx::Primitive {
+ 
++// ── Fused LayerNorm + W8A8 Linear Primitive ─────────────────────
++// Inputs:
++//   x(M,K) float16, norm_weight(K) float16, norm_bias(K) float16,
++//   w(N,K) int8, scale_w(N) float32, bias(N) float16
++// Output: [y(M,N) float16]
++//
++// Dispatches layernorm + per-token activation quantization in one Metal
++// kernel, then reuses the existing INT8 TensorOps GEMM/dequant kernel.
++class LayerNormW8A8Linear : public mx::Primitive {
++ public:
++  LayerNormW8A8Linear(mx::Stream stream, const std::string& kernel_dir, float eps)
++      : mx::Primitive(stream), kernel_dir_(kernel_dir), eps_(eps) {}
++
++  void eval_cpu(
++      const std::vector<mx::array>& inputs,
++      std::vector<mx::array>& outputs) override {
++    throw std::runtime_error("LayerNormW8A8Linear: CPU not supported");
++  }
++
++  void eval_gpu(
++      const std::vector<mx::array>& inputs,
++      std::vector<mx::array>& outputs) override;
++
++  const char* name() const override {
++    return "LayerNormW8A8Linear";
++  }
++
++  bool is_equivalent(const mx::Primitive& other) const override {
++    return true;
++  }
++
++ private:
++  std::string kernel_dir_;
++  float eps_;
++};
++
+ 
+@@ -93,2 +129,13 @@ mx::array perchannel_linear(
+ 
++mx::array layernorm_perchannel_linear(
++    const mx::array& x,           // [M, K] float16
++    const mx::array& norm_weight, // [K] float16
++    const mx::array& norm_bias,   // [K] float16
++    const mx::array& w,           // [N, K] int8
++    const mx::array& scale_w,     // [N] float32
++    const mx::array& bias,        // [N] float16
++    double eps,
++    const std::string& kernel_dir,
++    mx::StreamOrDevice s = {});
++
+ 
+diff --git a/csrc/src/prim_bindings.cpp b/csrc/src/prim_bindings.cpp
+index deda08b..e1017a7 100644
+--- a/csrc/src/prim_bindings.cpp
++++ b/csrc/src/prim_bindings.cpp
+@@ -21,2 +21,8 @@ NB_MODULE(_cider_prim, m) {
+ 
++  m.def("layernorm_perchannel_linear", &cider::layernorm_perchannel_linear,
++        "x"_a, "norm_weight"_a, "norm_bias"_a, "w"_a, "scale_w"_a,
++        "bias"_a, "eps"_a, "kernel_dir"_a, nb::kw_only(),
++        "stream"_a = nb::none(),
++        "Fused LayerNorm + W8A8 linear: y = dequant(quant_a(ln(x)) @ w_int8) + bias");
++
+   m.def("w4a8_linear", &cider::w4a8_linear, "x"_a, "packed_w"_a, "scale_w"_a,
+diff --git a/csrc/src/w8a8_primitive.mm b/csrc/src/w8a8_primitive.mm
+index 2425ff5..971dbce 100644
+--- a/csrc/src/w8a8_primitive.mm
++++ b/csrc/src/w8a8_primitive.mm
+@@ -57,2 +57,4 @@ public:
+     quantize_lib_ = compile_source(mtl_device, kernel_dir + "/w8a8_quantize.metal");
++    layernorm_lib_ =
++        compile_source(mtl_device, kernel_dir + "/layernorm_quantize.metal");
+     mv_lib_ = compile_source(mtl_device, kernel_dir + "/w8a8_int8_mv.metal");
+@@ -82,2 +84,3 @@ private:
+   MTL::Library *quantize_lib_ = nullptr;
++  MTL::Library *layernorm_lib_ = nullptr;
+   MTL::Library *mv_lib_ = nullptr;
+@@ -112,3 +115,3 @@ private:
+       id<MTLFunction> func = nil;
+-      for (auto *lib : {matmul_lib_, quantize_lib_, mv_lib_}) {
++      for (auto *lib : {matmul_lib_, quantize_lib_, layernorm_lib_, mv_lib_}) {
+         if (!lib) continue;
+@@ -277,2 +280,141 @@ array perchannel_linear(const array &x, const array &w, const array &scale_w,
+ 
++void LayerNormW8A8Linear::eval_gpu(const std::vector<array> &inputs,
++                                   std::vector<array> &outputs) {
++  auto &x = inputs[0];           // [M, K] float16
++  auto &norm_weight = inputs[1]; // [K] float16
++  auto &norm_bias = inputs[2];   // [K] float16
++  auto &w = inputs[3];           // [N, K] int8
++  auto &scale_w = inputs[4];     // [N] float32
++  auto &bias = inputs[5];        // [N] float16
++  auto &out = outputs[0];        // [M, N] float16
++
++  uint32_t M = static_cast<uint32_t>(x.shape(0));
++  uint32_t N = static_cast<uint32_t>(w.shape(0));
++  uint32_t K = static_cast<uint32_t>(w.shape(1));
++
++  out.set_data(allocator::malloc(out.nbytes()));
++
++  auto &cache = PipelineCache::instance();
++  cache.ensure_init(kernel_dir_);
++
++  auto &s = stream();
++  auto &enc = metal::get_command_encoder(s);
++
++  size_t a_bytes = static_cast<size_t>(M) * K;
++  size_t sa_bytes = static_cast<size_t>(M) * sizeof(float);
++
++  array a_int8({static_cast<int>(M), static_cast<int>(K)}, int8, nullptr, {});
++  a_int8.set_data(allocator::malloc(a_bytes));
++
++  array sa({static_cast<int>(M)}, float32, nullptr, {});
++  sa.set_data(allocator::malloc(sa_bytes));
++
++  {
++    auto *pso = cache.get("layernorm_quantize_per_token");
++    enc.set_compute_pipeline_state(pso);
++    enc.set_input_array(x, 0);
++    enc.set_input_array(norm_weight, 1);
++    enc.set_input_array(norm_bias, 2);
++    enc.set_output_array(a_int8, 3);
++    enc.set_output_array(sa, 4);
++    enc.set_bytes(M, 5);
++    enc.set_bytes(K, 6);
++    enc.set_bytes(eps_, 7);
++    uint32_t tg = std::min(256u, std::max(32u, ((K + 31) / 32) * 32));
++    enc.dispatch_threadgroups(MTL::Size::Make(M, 1, 1),
++                              MTL::Size::Make(tg, 1, 1));
++  }
++
++  enc.barrier();
++
++  {
++    bool use_small = (M <= 64);
++    const char *kname = use_small ? "w8a8_matmul_fused_dequant_small"
++                                  : "w8a8_matmul_fused_dequant";
++    uint32_t BM = use_small ? TileSmall::BM : TileLarge::BM;
++    uint32_t BN = use_small ? TileSmall::BN : TileLarge::BN;
++    uint32_t threads = use_small ? TileSmall::THREADS : TileLarge::THREADS;
++
++    auto *pso = cache.get(kname);
++    enc.set_compute_pipeline_state(pso);
++
++    uint32_t tiles_n = (N + BN - 1) / BN;
++    uint32_t tiles_m = (M + BM - 1) / BM;
++    uint32_t swizzle_log;
++    if (tiles_m <= 3) {
++      swizzle_log = 0;
++    } else if (tiles_m <= 6) {
++      swizzle_log = 1;
++    } else {
++      swizzle_log = 2;
++    }
++    uint32_t tile = 1u << swizzle_log;
++    uint32_t grid_x = tiles_n * tile;
++    uint32_t grid_y = (tiles_m + tile - 1) / tile;
++
++    enc.set_input_array(a_int8, 0);
++    enc.set_input_array(w, 1);
++    enc.set_output_array(out, 2);
++    enc.set_bytes(M, 3);
++    enc.set_bytes(N, 4);
++    enc.set_bytes(K, 5);
++    enc.set_input_array(sa, 6);
++    enc.set_input_array(scale_w, 7);
++    enc.set_bytes(swizzle_log, 8);
++    enc.set_bytes(tiles_m, 9);
++    enc.set_bytes(tiles_n, 10);
++    enc.set_input_array(bias, 11);
++
++    enc.dispatch_threadgroups(MTL::Size::Make(grid_x, grid_y, 1),
++                              MTL::Size::Make(threads, 1, 1));
++  }
++
++  enc.add_temporary(a_int8);
++  enc.add_temporary(sa);
++}
++
++array layernorm_perchannel_linear(const array &x, const array &norm_weight,
++                                  const array &norm_bias, const array &w,
++                                  const array &scale_w, const array &bias,
++                                  double eps, const std::string &kernel_dir,
++                                  StreamOrDevice s) {
++  if (x.ndim() != 2) {
++    throw std::invalid_argument(
++        "layernorm_perchannel_linear: x must be 2D [M,K]");
++  }
++  if (norm_weight.ndim() != 1 || norm_bias.ndim() != 1) {
++    throw std::invalid_argument(
++        "layernorm_perchannel_linear: norm tensors must be 1D [K]");
++  }
++  if (w.ndim() != 2) {
++    throw std::invalid_argument(
++        "layernorm_perchannel_linear: w must be 2D [N,K]");
++  }
++  if (scale_w.ndim() != 1) {
++    throw std::invalid_argument(
++        "layernorm_perchannel_linear: scale_w must be 1D [N]");
++  }
++  if (x.shape(1) != w.shape(1) || norm_weight.shape(0) != w.shape(1) ||
++      norm_bias.shape(0) != w.shape(1)) {
++    throw std::invalid_argument(
++        "layernorm_perchannel_linear: x, norm tensors, and w must share K");
++  }
++
++  int M = x.shape(0);
++  int N = w.shape(0);
++  auto stream = to_stream(s);
++
++  auto result = array(
++      {M, N}, float16,
++      std::make_shared<LayerNormW8A8Linear>(stream, kernel_dir,
++                                            static_cast<float>(eps)),
++      {astype(x, float16, stream), astype(norm_weight, float16, stream),
++       astype(norm_bias, float16, stream), astype(w, int8, stream),
++       astype(scale_w, float32, stream), astype(bias, float16, stream)});
++  if (x.dtype() == bfloat16) {
++    return astype(result, bfloat16, stream);
++  }
++  return result;
++}
++
+ // ── Int8MatMulInt32 primitive (raw INT32 output, no dequant) ────
