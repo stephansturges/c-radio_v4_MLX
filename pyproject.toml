@@ -30,12 +30,18 @@ dev = [
   "pytest",
   "ruff",
 ]
+cider = [
+  "cider @ git+https://github.com/Mininglamp-AI/cider.git ; python_version >= '3.12'",
+]
 
 [project.scripts]
 cradio-mlx = "cradio_mlx.cli:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/cradio_mlx"]
+
+[tool.hatch.metadata]
+allow-direct-references = true
 
 [tool.ruff]
 line-length = 100

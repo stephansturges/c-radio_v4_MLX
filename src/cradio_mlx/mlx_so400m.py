@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
@@ -372,6 +373,14 @@ class MLXHEncoder(MLXRadioEncoder):
 
 
 def _linear(x: mx.array, weights: dict[str, mx.array], prefix: str) -> mx.array:
+    cider_weight = weights.get(f"{prefix}.cider_weight")
+    if cider_weight is not None:
+        return _cider_linear(x, weights, prefix, cider_weight)
+
+    cider4_weight = weights.get(f"{prefix}.cider4_weight")
+    if cider4_weight is not None:
+        return _cider_w4a8_linear(x, weights, prefix, cider4_weight)
+
     qweight = weights.get(f"{prefix}.qweight")
     if qweight is not None:
         group_size = int(_scalar_item(weights[f"{prefix}.qgroup_size"]))
@@ -410,6 +419,102 @@ def _linear(x: mx.array, weights: dict[str, mx.array], prefix: str) -> mx.array:
     if bias is not None:
         return mx.addmm(bias, x, mx.transpose(weight))
     return x @ mx.transpose(weight)
+
+
+def _cider_linear(
+    x: mx.array,
+    weights: dict[str, mx.array],
+    prefix: str,
+    cider_weight: mx.array,
+) -> mx.array:
+    try:
+        from cider.ops import perchannel_linear, pergroup_linear
+    except ImportError as exc:
+        raise RuntimeError(
+            "This bundle uses cider-w8a8 runtime quantization, but the optional "
+            "Cider package is not installed."
+        ) from exc
+    _assert_cider_available()
+
+    padded_meta = weights.get(f"{prefix}.cider_padded_in_features")
+    padded_in_features = (
+        int(_scalar_item(padded_meta)) if padded_meta is not None else int(cider_weight.shape[-1])
+    )
+    out_features_meta = weights.get(f"{prefix}.cider_out_features")
+    out_features = (
+        int(_scalar_item(out_features_meta))
+        if out_features_meta is not None
+        else cider_weight.shape[0]
+    )
+    if x.shape[-1] < padded_in_features:
+        pad_width = padded_in_features - x.shape[-1]
+        padding = mx.zeros((*x.shape[:-1], pad_width), dtype=x.dtype)
+        x = mx.concatenate([x, padding], axis=-1)
+
+    orig_shape = x.shape
+    x_2d = mx.reshape(x, (-1, padded_in_features))
+    bias = weights.get(f"{prefix}.bias")
+    if bias is not None:
+        bias = bias.astype(mx.float16)
+    group_size = int(_scalar_item(weights[f"{prefix}.cider_group_size"]))
+    scale = weights[f"{prefix}.cider_scale"]
+    if group_size == 0:
+        y = perchannel_linear(x_2d, cider_weight, scale, bias)
+    else:
+        y = pergroup_linear(x_2d, cider_weight, scale, group_size, bias)
+    return mx.reshape(y, (*orig_shape[:-1], out_features))
+
+
+def _cider_w4a8_linear(
+    x: mx.array,
+    weights: dict[str, mx.array],
+    prefix: str,
+    cider4_weight: mx.array,
+) -> mx.array:
+    try:
+        from cider.ops import w4a8_linear
+    except ImportError as exc:
+        raise RuntimeError(
+            "This bundle uses cider-w4a8 runtime quantization, but the optional "
+            "Cider package is not installed."
+        ) from exc
+    _assert_cider_available()
+
+    padded_meta = weights.get(f"{prefix}.cider_padded_in_features")
+    padded_in_features = (
+        int(_scalar_item(padded_meta))
+        if padded_meta is not None
+        else int(cider4_weight.shape[0] * 2)
+    )
+    out_features_meta = weights.get(f"{prefix}.cider_out_features")
+    out_features = (
+        int(_scalar_item(out_features_meta))
+        if out_features_meta is not None
+        else cider4_weight.shape[1]
+    )
+    if x.shape[-1] < padded_in_features:
+        pad_width = padded_in_features - x.shape[-1]
+        padding = mx.zeros((*x.shape[:-1], pad_width), dtype=x.dtype)
+        x = mx.concatenate([x, padding], axis=-1)
+
+    orig_shape = x.shape
+    x_2d = mx.reshape(x, (-1, padded_in_features))
+    y = w4a8_linear(x_2d, cider4_weight, weights[f"{prefix}.cider4_scale"])
+    bias = weights.get(f"{prefix}.bias")
+    if bias is not None:
+        y = y + bias.astype(y.dtype)
+    return mx.reshape(y, (*orig_shape[:-1], out_features))
+
+
+@lru_cache(maxsize=1)
+def _assert_cider_available() -> None:
+    from cider import is_available
+
+    if not is_available():
+        raise RuntimeError(
+            "This bundle uses cider-w8a8 runtime quantization, but Cider's Apple "
+            "M5+ INT8 kernels are not available on this machine."
+        )
 
 
 def _layer_norm(x: mx.array, weight: mx.array, bias: mx.array, eps: float = 1e-6) -> mx.array:
@@ -503,6 +608,15 @@ def _should_cast_loaded_weight(key: str) -> bool:
         ".qmode_code",
         ".qin_features",
         ".qpadded_in_features",
+        ".cider_weight",
+        ".cider_scale",
+        ".cider4_weight",
+        ".cider4_scale",
+        ".cider4_group_size",
+        ".cider_group_size",
+        ".cider_in_features",
+        ".cider_padded_in_features",
+        ".cider_out_features",
     )
     if key.endswith(quantized_suffixes):
         return False

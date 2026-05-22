@@ -24,6 +24,8 @@ Bundle paths in that repository:
 | --- | --- | --- | --- |
 | `so400m/8bit-affine` | C-RADIOv4-SO400M | 8-bit affine, group size 64 | Compact/high-precision |
 | `h/8bit-affine` | C-RADIOv4-H | 8-bit affine, group size 64 | Compact/high-precision |
+| `so400m/cider-w8a8` | C-RADIOv4-SO400M | Cider W8A8, per-channel | M5+ compact/sometimes faster |
+| `h/cider-w8a8` | C-RADIOv4-H | Cider W8A8, per-channel | M5+ compact/faster |
 | `so400m/mxfp8` | C-RADIOv4-SO400M | `mxfp8`, group size 32 | Experimental/lower precision |
 | `h/mxfp8` | C-RADIOv4-H | `mxfp8`, group size 32 | Experimental/lower precision |
 
@@ -48,6 +50,8 @@ Implemented:
 - safetensors key/shape audit for the HF-to-MLX mapping pass
 - self-contained MLX bundle writer for local Hugging Face checkpoint directories
 - 8-bit affine and `mxfp8` MLX packed-weight quantization for supported linear layers
+- optional Cider W8A8 runtime bundles that use packed int8 weights plus online int8
+  activation quantization on Apple M5+ INT8 kernels
 - fused MLX fast attention and layernorm kernels in the native forward path
 - broad MLX benchmark matrix by model, resolution, batch size, dtype, and quantization mode
 - local-checkpoint parity tests that skip when checkpoints are absent
@@ -57,36 +61,39 @@ Implemented:
 
 Local benchmark environment:
 
-- Apple Silicon, `mlx` default device `Device(gpu, 0)`
+- Apple M5 Max, `mlx` default device `Device(gpu, 0)`
+- `mlx==0.31.2`; Cider W8A8 tests used Cider `0.7.0` from
+  https://github.com/Mininglamp-AI/cider
 - PyTorch backend device `mps`
 - speed matrix images copied from
   `/Users/stephansturges/Pictures/WALDO/WALDO_new_data_for_v4/cropped images`
   into ignored `reports/local_waldo_crops/`
-- speed matrix: MLX fast kernels, compiled forward only, no output materialization,
-  2 warmups, 5 measured repeats
+- current fair speed matrix below: `data/golden_images/smoke.jpg`, no output
+  materialization, 6 warmups, 12 measured repeats, one benchmark process at a time.
+  The Cider rows use the faster of compiled and non-compiled forward for that cell.
 - smoke parity fixture: `data/golden_images/smoke.jpg`
 
 ### 512px Batch-1 Speed
 
 | Model | Artifact | p50 latency | Throughput | Notes |
 | --- | --- | ---: | ---: | --- |
-| C-RADIOv4-SO400M | bf16 | 32.4 ms | 30.9 images/s | best speed path at same output contract |
-| C-RADIOv4-SO400M | HF `so400m/8bit-affine` | 47.1 ms | 21.2 images/s | packed low-bit runtime; compact/high-precision |
-| C-RADIOv4-SO400M | HF `so400m/mxfp8` | 49.8 ms | 20.1 images/s | packed low-bit runtime; experimental/lower precision |
-| C-RADIOv4-H | bf16 | 45.6 ms | 22.0 images/s | best speed path at same output contract |
-| C-RADIOv4-H | HF `h/8bit-affine` | 58.8 ms | 17.0 images/s | packed low-bit runtime; compact/high-precision |
-| C-RADIOv4-H | HF `h/mxfp8` | 52.6 ms | 19.0 images/s | packed low-bit runtime; experimental/lower precision |
+| C-RADIOv4-SO400M | bf16 | 32.7 ms | 30.6 images/s | fastest 512px SO400M tier measured |
+| C-RADIOv4-SO400M | HF `so400m/8bit-affine` | 49.6 ms | 20.2 images/s | packed MLX weight-only runtime; high precision |
+| C-RADIOv4-SO400M | HF `so400m/cider-w8a8` | 32.5 ms | 30.8 images/s | real W8A8 runtime; smaller, roughly matches bf16 here |
+| C-RADIOv4-H | bf16 | 53.7 ms | 18.6 images/s | strong baseline |
+| C-RADIOv4-H | HF `h/8bit-affine` | 74.2 ms | 13.5 images/s | packed MLX weight-only runtime; high precision |
+| C-RADIOv4-H | HF `h/cider-w8a8` | 47.1 ms | 21.2 images/s | real W8A8 runtime; modestly faster than bf16 |
 
 ### Best Matrix Throughput
 
 | Model | Artifact | Resolution | Batch | p50 batch latency | Throughput |
 | --- | --- | ---: | ---: | ---: | ---: |
-| C-RADIOv4-SO400M | bf16 | 256 | 4 | 27.2 ms | 146.8 images/s |
-| C-RADIOv4-SO400M | HF `so400m/8bit-affine` | 256 | 4 | 34.9 ms | 114.5 images/s |
-| C-RADIOv4-SO400M | HF `so400m/mxfp8` | 256 | 4 | 45.3 ms | 88.3 images/s |
-| C-RADIOv4-H | bf16 | 256 | 4 | 35.3 ms | 113.4 images/s |
-| C-RADIOv4-H | HF `h/8bit-affine` | 256 | 4 | 47.4 ms | 84.3 images/s |
-| C-RADIOv4-H | HF `h/mxfp8` | 256 | 4 | 37.9 ms | 105.6 images/s |
+| C-RADIOv4-SO400M | bf16 | 256 | 4 | 27.6 ms | 144.9 images/s |
+| C-RADIOv4-SO400M | HF `so400m/8bit-affine` | 256 | 4 | 35.0 ms | 114.3 images/s |
+| C-RADIOv4-SO400M | HF `so400m/cider-w8a8` | 256 | 4 | 27.1 ms | 147.8 images/s |
+| C-RADIOv4-H | bf16 | 256 | 4 | 42.0 ms | 95.2 images/s |
+| C-RADIOv4-H | HF `h/8bit-affine` | 256 | 4 | 59.0 ms | 67.8 images/s |
+| C-RADIOv4-H | HF `h/cider-w8a8` | 256 | 4 | 37.4 ms | 106.9 images/s |
 
 MLX `0.31.2` is installed and current. Its newer `mxfp8`/`nvfp4` path is available, and
 `quantize_input=True` is documented only for `mxfp8` and `nvfp4` linear layers. For this
@@ -95,20 +102,24 @@ ViT workload, weight-only `mxfp8` was smaller but lower precision and slower tha
 came from MLX fast attention/layernorm plus compilation, not from the quantized matmul
 formats.
 
-The quantized HF artifacts run packed low-bit weights at runtime. They improve storage size
-and runtime weight memory, not end-to-end throughput. C-RADIOv4 is a dense ViT encoder:
-attention, layernorm, GELU, residual traffic, image patching, and activation movement remain
-in bf16 even when linear weights are packed. At these 512px batch-1 and small-batch shapes,
-Apple GPU bf16 dense matmul is already highly optimized, while weight-only quantized matmul
-adds per-group scale/bias handling and cannot fuse away the rest of the transformer block.
-If the goal is fastest local inference and the bf16 model fits, the quantized bundles are
-not the right runtime tier today. Keep them only when compact storage or lower runtime
-weight memory matters.
+The quantized HF artifacts are packed runtime bundles. The MLX `8bit-affine` and `mxfp8`
+formats keep weights packed and call `mx.quantized_matmul`, but they are weight-only
+paths: activations, attention, layernorm, GELU, residual traffic, and image patching still
+run in bf16. On this ViT encoder, those weight-only formats reduce storage and runtime
+weight memory but do not improve throughput.
 
-The current 10x-class speed lever is workload-level: compiled bf16 plus lower resolution
-and batching gives SO400M about 6.8 ms per image at 256px batch 4, versus the earlier
-PyTorch/MPS 512px batch-1 baseline of 120 ms. At the same 512px batch-1 contract, no
-honest 10x speedup was found; bf16 remains the fastest measured mode.
+Cider W8A8 is different: it quantizes activations online and runs int8 weight by int8
+activation kernels on Apple M5+ INT8 TensorOps. That is the first local path here that is
+both genuinely low-bit at runtime and sometimes faster. The gains are still modest rather
+than 10x because C-RADIOv4 is not an LLM decode workload: it has large token matrices,
+attention and normalization remain outside the int8 kernels, and the custom linear kernels
+do not fuse whole transformer blocks. Local 2-bit/4-bit Qwen models feel more dramatic
+because they are often VRAM/bandwidth-bound decoder LLMs with many repeated linear layers
+and inference stacks built specifically around low-bit decode. This repo now supports the
+same principle only where the Apple/MLX kernel layer can actually execute it.
+
+W4A8 was also tested. It cut bundle and active weight memory further, but it was slower
+end-to-end and failed precision gates, so it is not a supported artifact.
 
 ### Quantized Precision
 
@@ -123,10 +134,19 @@ Quantized formats versus the bf16 MLX bundle at `512x512`:
 
 Smoke-image 8-bit versus bf16 precision at `512x512`:
 
+| Model | Format | Summary cosine | Spatial cosine |
+| --- | --- | ---: | ---: |
+| C-RADIOv4-SO400M | 8-bit affine | 0.999879 | 0.999778 |
+| C-RADIOv4-SO400M | Cider W8A8 | 0.998164 | 0.998889 |
+| C-RADIOv4-H | 8-bit affine | 0.999886 | 0.999615 |
+| C-RADIOv4-H | Cider W8A8 | 0.997202 | 0.996210 |
+
+Rejected W4A8 smoke precision at `256x256`:
+
 | Model | Summary cosine | Spatial cosine |
 | --- | ---: | ---: |
-| C-RADIOv4-SO400M | 0.999879 | 0.999778 |
-| C-RADIOv4-H | 0.999886 | 0.999615 |
+| C-RADIOv4-SO400M Cider W4A8 | 0.913606 | 0.979707 |
+| C-RADIOv4-H Cider W4A8 | 0.850901 | 0.817213 |
 
 Parity against PyTorch/MPS at `512x512`, `bfloat16`:
 
@@ -137,10 +157,17 @@ Parity against PyTorch/MPS at `512x512`, `bfloat16`:
 
 ### Bundle Size
 
-| Model | bf16 bundle | 8-bit affine bundle | mxfp8 bundle |
-| --- | ---: | ---: | ---: |
-| C-RADIOv4-SO400M | 1.6 GB | 517 MB | 479 MB |
-| C-RADIOv4-H | 2.4 GB | 758 MB | 702 MB |
+| Model | bf16 bundle | 8-bit affine | Cider W8A8 | Rejected Cider W4A8 |
+| --- | ---: | ---: | ---: | ---: |
+| C-RADIOv4-SO400M | 1.6 GB | 517 MB | 468 MB | 271 MB |
+| C-RADIOv4-H | 2.4 GB | 758 MB | 685 MB | 384 MB |
+
+Approximate MLX active memory immediately after loading weights:
+
+| Model | bf16 | 8-bit affine | Cider W8A8 | Rejected Cider W4A8 |
+| --- | ---: | ---: | ---: | ---: |
+| C-RADIOv4-SO400M | 863 MB | 507 MB | 453 MB | 247 MB |
+| C-RADIOv4-H | 1.30 GB | 754 MB | 676 MB | 361 MB |
 
 ## Bootstrap
 
@@ -155,6 +182,16 @@ For a lighter dev setup that avoids PyTorch, install:
 
 ```sh
 python -m pip install -e ".[dev]"
+```
+
+Cider W8A8 runtime bundles require Apple M5+ hardware and Python `>=3.12`, because Cider
+builds a native MLX extension:
+
+```sh
+python3.12 -m venv .venv-cider
+source .venv-cider/bin/activate
+python -m pip install -U pip
+python -m pip install -e ".[dev,cider]"
 ```
 
 ## Download Checkpoints
@@ -206,6 +243,8 @@ snapshot_download(
         "README.md",
         "so400m/8bit-affine/*",
         "h/8bit-affine/*",
+        "so400m/cider-w8a8/*",
+        "h/cider-w8a8/*",
         "so400m/mxfp8/*",
         "h/mxfp8/*",
     ],
@@ -217,6 +256,8 @@ Example checkpoint paths after download:
 
 - `bundles/hf-c-radiov4-quantized/so400m/8bit-affine`
 - `bundles/hf-c-radiov4-quantized/h/8bit-affine`
+- `bundles/hf-c-radiov4-quantized/so400m/cider-w8a8`
+- `bundles/hf-c-radiov4-quantized/h/cider-w8a8`
 - `bundles/hf-c-radiov4-quantized/so400m/mxfp8`
 - `bundles/hf-c-radiov4-quantized/h/mxfp8`
 
@@ -327,6 +368,17 @@ cradio-mlx quantize \
   --mode mxfp8
 ```
 
+Build optional Cider W8A8 runtime bundles on Apple M5+ with Python `>=3.12`:
+
+```sh
+cradio-mlx quantize \
+  --model bundles/c-radiov4-h-bf16 \
+  --out bundles/c-radiov4-h-cider-w8a8 \
+  --bits 8 \
+  --group-size 0 \
+  --mode cider-w8a8
+```
+
 Hugging Face upload notes and model-card README templates are in
 [docs/huggingface_upload.md](docs/huggingface_upload.md).
 
@@ -392,4 +444,5 @@ The package stays embedding-first:
 - spatial grid reshape: `(B, D, H, W)`
 - supported image sizes: 256 to 2048, multiples of 16
 - first production tier: `bfloat16`
-- supported quantized tier: 8-bit affine, with precision gates before use
+- supported quantized tiers: 8-bit affine for high precision, Cider W8A8 for Apple M5+
+  compact runtime experiments, both with precision gates before use

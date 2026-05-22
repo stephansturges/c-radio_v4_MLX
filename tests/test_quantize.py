@@ -16,6 +16,26 @@ def test_validate_affine_bits():
         validate_quantization(bits=3, group_size=64, mode="affine")
 
 
+def test_validate_cider_w8a8_runtime_quantization():
+    validate_quantization(bits=8, group_size=0, mode="cider-w8a8")
+
+    with pytest.raises(ValueError, match="requires bits=8"):
+        validate_quantization(bits=4, group_size=0, mode="cider-w8a8")
+
+    with pytest.raises(ValueError, match="group_size"):
+        validate_quantization(bits=8, group_size=32, mode="cider-w8a8")
+
+
+def test_validate_cider_w4a8_runtime_quantization():
+    validate_quantization(bits=4, group_size=0, mode="cider-w4a8")
+
+    with pytest.raises(ValueError, match="requires bits=4"):
+        validate_quantization(bits=8, group_size=0, mode="cider-w4a8")
+
+    with pytest.raises(ValueError, match="currently requires group_size=0"):
+        validate_quantization(bits=4, group_size=64, mode="cider-w4a8")
+
+
 def test_quantize_dry_run_writes_planned_manifest(tmp_path):
     source = tmp_path / "source"
     BundleManifest(

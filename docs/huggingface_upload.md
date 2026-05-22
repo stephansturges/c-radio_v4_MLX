@@ -11,6 +11,11 @@ Primary compact/high-precision bundles to upload:
 - `bundles/c-radiov4-so400m-8bit`
 - `bundles/c-radiov4-h-8bit`
 
+Apple M5+ runtime low-bit bundles to upload:
+
+- `bundles/c-radiov4-so400m-cider-w8a8`
+- `bundles/c-radiov4-h-cider-w8a8`
+
 Experimental `mxfp8` bundles, only upload if you want to publish the lower-precision
 tradeoff explicitly:
 
@@ -21,6 +26,8 @@ Remote repository structure:
 
 - `so400m/8bit-affine`
 - `h/8bit-affine`
+- `so400m/cider-w8a8`
+- `h/cider-w8a8`
 - `so400m/mxfp8`
 - `h/mxfp8`
 
@@ -45,6 +52,8 @@ Upload example:
 hf upload StephanST/C-radiov4_quantized docs/hf_repo_readme.md README.md --type model
 hf upload StephanST/C-radiov4_quantized bundles/c-radiov4-so400m-8bit so400m/8bit-affine --type model
 hf upload StephanST/C-radiov4_quantized bundles/c-radiov4-h-8bit h/8bit-affine --type model
+hf upload StephanST/C-radiov4_quantized bundles/c-radiov4-so400m-cider-w8a8 so400m/cider-w8a8 --type model
+hf upload StephanST/C-radiov4_quantized bundles/c-radiov4-h-cider-w8a8 h/cider-w8a8 --type model
 hf upload StephanST/C-radiov4_quantized bundles/c-radiov4-so400m-mxfp8 so400m/mxfp8 --type model
 hf upload StephanST/C-radiov4_quantized bundles/c-radiov4-h-mxfp8 h/mxfp8 --type model
 ```
@@ -64,6 +73,12 @@ Uploaded packed-runtime documentation refresh:
 - `h/8bit-affine`: https://huggingface.co/StephanST/C-radiov4_quantized/commit/029a4fb3ea51495a685939ea75da31a0b5b254e6
 - `so400m/mxfp8`: https://huggingface.co/StephanST/C-radiov4_quantized/commit/87a03f5353acf256eea8058efda472cfb3350405
 - `h/mxfp8`: https://huggingface.co/StephanST/C-radiov4_quantized/commit/ae3a673d621eb7cb98a3b6e3f3b0a0f07ecccc6e
+
+Uploaded Cider W8A8 runtime bundles:
+
+- Root model card: https://huggingface.co/StephanST/C-radiov4_quantized/commit/3a7fe7204a0d7a3558d0796d124449b67e46a89c
+- `so400m/cider-w8a8`: https://huggingface.co/StephanST/C-radiov4_quantized/commit/039a7d2ed412819c4eed47600623237c9d1d7117
+- `h/cider-w8a8`: https://huggingface.co/StephanST/C-radiov4_quantized/commit/67437d9b33369a532cf080376ab0733827ea931f
 
 The model cards must preserve upstream NVIDIA provenance. The repository code is MIT
 licensed, but the model weights and converted bundles remain governed by the NVIDIA Open

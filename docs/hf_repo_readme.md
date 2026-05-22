@@ -30,6 +30,8 @@ https://github.com/stephansturges/c-radio_v4_MLX
 | --- | --- | --- | --- |
 | `so400m/8bit-affine` | `nvidia/C-RADIOv4-SO400M` | 8-bit affine, group size 64 | Compact/high-precision |
 | `h/8bit-affine` | `nvidia/C-RADIOv4-H` | 8-bit affine, group size 64 | Compact/high-precision |
+| `so400m/cider-w8a8` | `nvidia/C-RADIOv4-SO400M` | Cider W8A8, per-channel | M5+ compact/runtime low-bit |
+| `h/cider-w8a8` | `nvidia/C-RADIOv4-H` | Cider W8A8, per-channel | M5+ compact/runtime low-bit |
 | `so400m/mxfp8` | `nvidia/C-RADIOv4-SO400M` | `mxfp8`, group size 32 | Experimental/lower precision |
 | `h/mxfp8` | `nvidia/C-RADIOv4-H` | `mxfp8`, group size 32 | Experimental/lower precision |
 
@@ -58,23 +60,35 @@ Measured against local bf16 MLX bundles at `512x512` on 12 WALDO crop images.
 | `so400m/mxfp8` | 0.989820 / 0.950717 | 0.993502 / 0.977879 |
 | `h/mxfp8` | 0.990217 / 0.974710 | 0.988696 / 0.976071 |
 
-The 8-bit affine bundles are the recommended compact/high-precision artifacts. The
-`mxfp8` bundles are included for experimentation and are lower precision in these checks.
+The 8-bit affine bundles are the recommended compact/high-precision artifacts. Cider W8A8
+is a real low-bit runtime path for Apple M5+ machines and trades a little more embedding
+drift for lower memory and modest speedups in some cells. The `mxfp8` bundles are included
+for experimentation and are lower precision in these checks.
+
+Smoke-image Cider W8A8 precision versus local bf16 MLX at `512x512`:
+
+| Bundle | Summary cosine | Spatial cosine |
+| --- | ---: | ---: |
+| `so400m/cider-w8a8` | 0.998164 | 0.998889 |
+| `h/cider-w8a8` | 0.997202 | 0.996210 |
 
 ## Speed Summary
 
-Fast-kernel compiled-forward MLX measurements on Apple Silicon at `512x512`, batch 1:
+MLX measurements on Apple M5 Max at `512x512`, batch 1:
 
 | Bundle | p50 latency | Throughput |
 | --- | ---: | ---: |
-| `so400m/8bit-affine` | 47.1 ms | 21.2 images/s |
-| `h/8bit-affine` | 58.8 ms | 17.0 images/s |
+| `so400m/8bit-affine` | 49.6 ms | 20.2 images/s |
+| `h/8bit-affine` | 74.2 ms | 13.5 images/s |
+| `so400m/cider-w8a8` | 32.5 ms | 30.8 images/s |
+| `h/cider-w8a8` | 47.1 ms | 21.2 images/s |
 | `so400m/mxfp8` | 49.8 ms | 20.1 images/s |
 | `h/mxfp8` | 52.6 ms | 19.0 images/s |
 
-These are packed low-bit runtime measurements. The quantized bundles prioritize compact
-storage and lower runtime weight memory. For latency-sensitive inference, the bf16 bundles
-in the implementation repo remain faster when they fit.
+These are packed low-bit runtime measurements. The MLX affine and `mxfp8` bundles
+prioritize compact storage and lower runtime weight memory over throughput. Cider W8A8 is
+the faster low-bit runtime path found so far, but it requires Apple M5+ hardware and the
+optional Cider package.
 
 ## Usage
 
@@ -97,6 +111,19 @@ Use `--backend mlx-h` for the H model:
 cradio-mlx embed \
   --backend mlx-h \
   --checkpoint h/8bit-affine \
+  --image image.jpg \
+  --image-size 512 \
+  --dtype bfloat16 \
+  --save-npz embedding.npz
+```
+
+Cider W8A8 bundles require Python `>=3.12`, Apple M5+ hardware, and Cider:
+
+```sh
+python -m pip install "cider @ git+https://github.com/Mininglamp-AI/cider.git"
+cradio-mlx embed \
+  --backend mlx-h \
+  --checkpoint h/cider-w8a8 \
   --image image.jpg \
   --image-size 512 \
   --dtype bfloat16 \
