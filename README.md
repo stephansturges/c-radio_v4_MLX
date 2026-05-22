@@ -59,6 +59,9 @@ Implemented:
 - optional SmoothQuant-style calibration scales for Cider experiments without
   dequantizing weights back to dense bf16
 - fused MLX fast attention and layernorm kernels in the native forward path
+- experimental patched-Cider fusion targets for `layernorm -> W8A8 linear` and
+  `GELU -> W8A8 fc2`
+- fixed-shape Core ML fast-kill conversion and benchmark tooling for SO400M/H
 - broad MLX benchmark matrix by model, resolution, batch size, dtype, and quantization mode
 - local-checkpoint parity tests that skip when checkpoints are absent
 - unit tests for shapes, manifests, preprocessing, CLI behavior, metrics, and MLX helpers
@@ -227,6 +230,236 @@ Approximate MLX active memory immediately after loading weights:
 | --- | ---: | ---: | ---: | ---: |
 | C-RADIOv4-SO400M | 863 MB | 507 MB | 453 MB | 247 MB |
 | C-RADIOv4-H | 1.30 GB | 754 MB | 676 MB | 361 MB |
+
+## Low-Level Acceleration Work
+
+This was the follow-on pass after the first quantized artifacts landed. The goal was to
+test two concrete bets instead of continuing to chase generic "quantization should be
+faster" assumptions:
+
+1. Fuse the Cider W8A8 MLP path so `GELU(mlp.fc1)` feeds `mlp.fc2` without round-tripping
+   through a separate MLX GELU op before activation quantization.
+2. Run a Core ML fixed-shape proof to see whether Apple's model compiler could beat the
+   best MLX/Cider path enough to justify a separate backend.
+
+Both bets were implemented, benchmarked, and gated. The short version is:
+
+- The fastest low-bit runtime path is now Cider p99.99 with
+  `--cider-fusion required --cider-fusion-targets ln+mlp`.
+- The MLP fusion is a real low-level win, but it is a 1.08x to 1.19x win, not a 10x win.
+- Core ML is precise and fast for fixed `512x512` batch-1 inputs. It is worth keeping as a
+  proof for C-RADIOv4-H, but it is not yet a production backend in this repo.
+- There is no evidence from these runs that Core ML `ALL` is using ANE in a meaningfully
+  different way than `CPU_AND_GPU`; the timings were effectively identical.
+
+### What Changed
+
+The MLX runtime now exposes a `cider_fusion_targets` setting through the Python API and
+CLI. Valid values are:
+
+| Target | Effect |
+| --- | --- |
+| `ln` | Fuse `norm1 -> attn.qkv` and `norm2 -> mlp.fc1`; this is the default target. |
+| `mlp` | Fuse only `GELU(mlp.fc1) -> mlp.fc2`. |
+| `ln+mlp` | Use both low-level fused paths. |
+
+The Cider integration has three modes:
+
+| Mode | Behavior |
+| --- | --- |
+| `off` | Do not call patched Cider fusion ops. |
+| `auto` | Use patched ops if installed; silently fall back otherwise. |
+| `required` | Fail fast if the installed Cider package does not provide the requested fused op. |
+
+The shipped Cider patch set is:
+
+| Patch | Adds | Used by |
+| --- | --- | --- |
+| `cider_patches/0001-layernorm-w8a8-linear.patch` | `cider.ops.layernorm_perchannel_linear(...)` | `ln` and `ln+mlp` |
+| `cider_patches/0002-gelu-w8a8-linear.patch` | `cider.ops.gelu_perchannel_linear(...)` | `mlp` and `ln+mlp` |
+
+The fused hooks are intentionally limited to per-channel Cider W8A8 bundles. They reject
+SmoothQuant scales and per-group W8A8 in `required` mode because the patched Cider ops
+implemented here only cover the p99.99 per-channel path that was benchmarked.
+
+### Install Patched Cider
+
+Use a separate Python 3.12 environment for Cider because it builds a native MLX extension:
+
+```sh
+python3.12 -m venv .venv-cider
+source .venv-cider/bin/activate
+python -m pip install -U pip
+python -m pip install -e ".[dev,cider]"
+```
+
+If testing the experimental fused path, apply both patches to a Cider checkout based on
+commit `01b8f9c0e65a54375e50eab9480ca2ff6a1a0d6e`, then reinstall Cider:
+
+```sh
+git clone https://github.com/Mininglamp-AI/cider /tmp/cider-src
+git -C /tmp/cider-src checkout 01b8f9c0e65a54375e50eab9480ca2ff6a1a0d6e
+git -C /tmp/cider-src apply --3way \
+  /path/to/c-radio_v4_MLX/cider_patches/0001-layernorm-w8a8-linear.patch
+git -C /tmp/cider-src apply \
+  /path/to/c-radio_v4_MLX/cider_patches/0002-gelu-w8a8-linear.patch
+python -m pip install -e /tmp/cider-src
+```
+
+Run with `--cider-fusion required` when benchmarking. That prevents accidentally measuring
+the unfused fallback because the wrong Cider package was imported.
+
+### Reproduce Cider Fusion Benchmarks
+
+SO400M p99.99 Cider W8A8 with both fusion targets:
+
+```sh
+python scripts/benchmark_matrix.py \
+  --variant so400m \
+  --checkpoint bundles/hf-c-radiov4-quantized/so400m/cider-w8a8-p9999 \
+  --images data/golden_images/smoke.jpg \
+  --image-sizes 256 512 \
+  --batch-sizes 1 4 \
+  --warmups 3 \
+  --repeats 8 \
+  --dtype bfloat16 \
+  --cider-fusion required \
+  --cider-fusion-targets ln+mlp \
+  --summary reports/experiments/mlp-fusion-so400m-ln-mlp.json
+```
+
+C-RADIOv4-H p99.99 Cider W8A8 with both fusion targets:
+
+```sh
+python scripts/benchmark_matrix.py \
+  --variant h \
+  --checkpoint bundles/hf-c-radiov4-quantized/h/cider-w8a8-p9999 \
+  --images data/golden_images/smoke.jpg \
+  --image-sizes 256 512 \
+  --batch-sizes 1 4 \
+  --warmups 3 \
+  --repeats 8 \
+  --dtype bfloat16 \
+  --cider-fusion required \
+  --cider-fusion-targets ln+mlp \
+  --summary reports/experiments/mlp-fusion-h-ln-mlp.json
+```
+
+The current fused-versus-unfused results, using `data/golden_images/smoke.jpg` and
+materialized outputs, are:
+
+| Model | Resolution | Batch | Off p50 | `mlp` p50 | `ln+mlp` p50 | Best speedup |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| SO400M | 256 | 1 | 11.33 ms | 10.60 ms | 10.31 ms | 1.099x |
+| SO400M | 256 | 4 | 27.48 ms | 24.09 ms | 23.51 ms | 1.169x |
+| SO400M | 512 | 1 | 32.54 ms | 28.99 ms | 28.47 ms | 1.143x |
+| SO400M | 512 | 4 | 119.66 ms | 102.97 ms | 100.79 ms | 1.187x |
+| H | 256 | 1 | 15.64 ms | 14.76 ms | 14.53 ms | 1.077x |
+| H | 256 | 4 | 37.42 ms | 32.76 ms | 32.71 ms | 1.144x |
+| H | 512 | 1 | 47.24 ms | 42.84 ms | 42.68 ms | 1.107x |
+| H | 512 | 4 | 169.33 ms | 144.61 ms | 143.67 ms | 1.179x |
+
+Fused p99.99 Cider precision against unfused p99.99 Cider at `512x512`:
+
+| Model | Target | Summary cosine | Spatial cosine |
+| --- | --- | ---: | ---: |
+| SO400M | `mlp` | 0.998928 | 0.999143 |
+| SO400M | `ln+mlp` | 0.998735 | 0.999090 |
+| H | `mlp` | 0.998615 | 0.997137 |
+| H | `ln+mlp` | 0.998612 | 0.997095 |
+
+The precision drift is expected: LayerNorm and GELU move into Cider FP16 Metal kernels
+immediately before W8A8 activation quantization. The drift is small enough for an
+experimental speed tier, but downstream application metrics should still decide whether
+`ln+mlp` is acceptable for production.
+
+### Reproduce Core ML Fast-Kill
+
+Install the optional Core ML dependency:
+
+```sh
+python -m pip install -e ".[reference,coreml]"
+```
+
+The script first attempts TorchScript tracing. The RADIO patch generator shape logic
+currently makes tracing fail with:
+
+```text
+TypeError: only 0-dimensional arrays can be converted to Python scalars
+```
+
+The fallback path uses `torch.export(...).run_decompositions({})`, which converted both
+SO400M and H to Core ML ML Program packages.
+
+SO400M:
+
+```sh
+python scripts/coreml_fastkill.py \
+  --checkpoint checkpoints/c-radiov4-so400m \
+  --model-id nvidia/C-RADIOv4-SO400M \
+  --variant so400m \
+  --image data/golden_images/smoke.jpg \
+  --image-size 512 \
+  --batch-size 1 \
+  --baseline-p50-ms 28.47 \
+  --compute-units ALL CPU_AND_GPU \
+  --warmups 3 \
+  --repeats 8 \
+  --package reports/experiments/so400m-512-b1.mlpackage \
+  --out reports/experiments/coreml-so400m-fastkill.json
+```
+
+C-RADIOv4-H:
+
+```sh
+python scripts/coreml_fastkill.py \
+  --checkpoint checkpoints/c-radiov4-h \
+  --model-id nvidia/C-RADIOv4-H \
+  --variant h \
+  --image data/golden_images/smoke.jpg \
+  --image-size 512 \
+  --batch-size 1 \
+  --baseline-p50-ms 42.68 \
+  --compute-units ALL CPU_AND_GPU \
+  --warmups 3 \
+  --repeats 8 \
+  --package reports/experiments/h-512-b1.mlpackage \
+  --out reports/experiments/coreml-h-fastkill.json
+```
+
+Current Core ML results:
+
+| Model | Compute unit | p50 | p95 | Summary cosine | Spatial cosine | Gate |
+| --- | --- | ---: | ---: | ---: | ---: | --- |
+| SO400M | `ALL` | 25.12 ms | 25.25 ms | 0.999998 | 0.999995 | kill |
+| SO400M | `CPU_AND_GPU` | 25.01 ms | 25.26 ms | 0.999998 | 0.999995 | kill |
+| H | `ALL` | 31.42 ms | 31.83 ms | 0.999998 | 0.999991 | continue |
+| H | `CPU_AND_GPU` | 31.73 ms | 31.90 ms | 0.999998 | 0.999991 | continue |
+
+The gate was "continue only if Core ML is at least 20% faster than the fused Cider
+baseline while preserving cosine." SO400M was precise and absolutely faster, but it did
+not clear the 20% threshold versus `28.47 ms`. H cleared the threshold versus `42.68 ms`.
+Because `ALL` and `CPU_AND_GPU` were effectively the same, the result should be described
+as a Core ML fixed-shape GPU/compiler win, not as an ANE win.
+
+### Final Performance Decision
+
+The repo now has four distinct model tiers:
+
+| Tier | Use when | Do not expect |
+| --- | --- | --- |
+| bf16 MLX | You want the strongest stable baseline and simplest deployment. | Smaller bundles. |
+| 8-bit affine MLX | You want compact, very high-cosine bundles using packed weights. | Higher throughput on this ViT. |
+| Cider W8A8 p99.99 `ln+mlp` | You are on Apple M5+, accept experimental patched Cider, and want the fastest low-bit MLX path found so far. | 10x speedups or LLM-style low-bit gains. |
+| Core ML fixed-shape | You can tolerate a separate fixed-shape proof path, especially for C-RADIOv4-H. | A documented ANE-specific speedup or dynamic production backend here. |
+
+The main reason quantization does not produce "super-duper" throughput here is that this
+is a dense ViT encoder. The model runs large full-sequence matrix operations once per
+image; it is not repeatedly decoding one token at a time from enormous weight matrices.
+Weight-only quantization reduces bundle and active weight memory, but attention, layernorm,
+GELU, residual traffic, patch projection, activation movement, output materialization, and
+MLX scheduling remain in the hot path. Cider W8A8 helps because it is a true runtime
+low-bit path, but it only covers selected linears, not the full transformer block.
 
 ## Bootstrap
 
